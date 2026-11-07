@@ -25,7 +25,6 @@ def get_user(user_id, name="Игрок"):
 async def cmd_start(message: types.Message):
     get_user(message.from_user.id, message.from_user.first_name)
     
-    # Убрали кнопки игр, так как игры теперь пишутся текстом
     builder = InlineKeyboardBuilder()
     builder.button(text="🎁 Бонус", callback_data="menu_bonus")
     builder.button(text="🏦 Банк (Перевод)", callback_data="menu_bank")
@@ -38,9 +37,9 @@ async def cmd_start(message: types.Message):
         f"Твой баланс: {users[message.from_user.id]['balance']} Bin\n\n"
         f"🎮 **Доступные игры (пиши в чат):**\n"
         f"├ 💣 `Мины [ставка] [мины]` (Пример: Мины 100 2)\n"
-        f"├ 🪙 `Флип [ставка]` (Орел/Решка)\n"
-        f"├ ♦️ `Хило [ставка]` (Больше/Меньше)\n"
-        f"└ 💥 `Хотлайн [ставка]` (Рискнуть всем)\n\n"
+        f"├ 🪙 `Флип [ставка]`\n"
+        f"├ ♦️ `Хило [ставка]` (Множитель и продолжение)\n"
+        f"└ 💥 `Хотлайн [ставка]`\n\n"
         f"Напиши **Б**, чтобы узнать баланс.",
         reply_markup=builder.as_markup(),
         parse_mode="Markdown"
@@ -195,7 +194,6 @@ async def play_mines(callback: types.CallbackQuery):
     if choice in state['mines']:
         await callback.message.edit_text(f"💥 БУМ! Ты попал на мину ({choice}). Потеряно {state['bet']} Bin.\nБаланс: {user['balance']}")
     else:
-        # Чем больше мин, тем больше множитель (упрощенно x2)
         win = state['bet'] * 2
         user['balance'] += win
         user['total_won'] += state['bet']
@@ -249,7 +247,7 @@ async def play_flip(callback: types.CallbackQuery):
         
     del games_state[uid]
 
-# --- ИГРА 3: ХИЛО (Больше/Меньше) ---
+# --- ИГРА 3: ХИЛО (Обновленная версия с множителем) ---
 @dp.message(F.text.lower().startswith("хило "))
 async def start_hilo(message: types.Message):
     uid = message.from_user.id
@@ -262,15 +260,36 @@ async def start_hilo(message: types.Message):
             
         user['balance'] -= bet
         card = random.randint(2, 14)
-        games_state[uid] = {"game": "hilo_play", "bet": bet, "card": card}
+        # multiplier - текущий множитель выигрыша
+        games_state[uid] = {"game": "hilo_play", "bet": bet, "card": card, "multiplier": 1.0}
         
-        builder = InlineKeyboardBuilder()
-        builder.button(text="⬆️ Больше", callback_data="hilo_more")
-        builder.button(text="⬇️ Меньше", callback_data="hilo_less")
-        
-        await message.answer(f"♦️ Ставка {bet} Bin.\nТекущая карта: {get_card_name(card)}\nСледующая будет больше или меньше?", reply_markup=builder.as_markup())
-    except:
+        await send_hilo_menu(uid, message.chat.id, is_new=True)
+    except Exception as e:
         await message.answer("Формат: Хило [ставка]\nПример: Хило 100")
+
+async def send_hilo_menu(uid, chat_id, is_new=False):
+    state = games_state[uid]
+    card = state['card']
+    mult = state['multiplier']
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⬆️ Больше", callback_data="hilo_more")
+    builder.button(text="⬇️ Меньше", callback_data="hilo_less")
+    
+    if mult > 1.0:
+        # Если есть накопленный выигрыш, даем кнопку забрать
+        win_amount = int(state['bet'] * mult)
+        builder.button(text=f"💰 Забрать {win_amount} Bin", callback_data="hilo_cashout")
+        builder.adjust(2, 1)
+        text = f"♦️ Текущая карта: {get_card_name(card)}\nТекущий множитель: **x{mult:.1f}** (Выигрыш: {win_amount} Bin)\n\nСледующая карта будет больше или меньше?"
+    else:
+        builder.adjust(2)
+        text = f"♦️ Ставка {state['bet']} Bin.\nТекущая карта: {get_card_name(card)}\n\nСледующая карта будет больше или меньше?"
+        
+    if is_new:
+        await bot.send_message(chat_id, text, reply_markup=builder.as_markup(), parse_mode="Markdown")
+    else:
+        await bot.edit_message_text(text=text, chat_id=chat_id, message_id=state['msg_id'], reply_markup=builder.as_markup(), parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("hilo_"))
 async def play_hilo(callback: types.CallbackQuery):
@@ -279,10 +298,21 @@ async def play_hilo(callback: types.CallbackQuery):
         await callback.answer("Игра не найдена.")
         return
         
-    choice = callback.data.split("_")[1]
     state = games_state[uid]
     user = get_user(uid)
+    choice = callback.data.split("_")[1]
     
+    if choice == "cashout":
+        # Забираем деньги
+        win_amount = int(state['bet'] * state['multiplier'])
+        user['balance'] += win_amount
+        user['total_won'] += (win_amount - state['bet'])
+        await callback.message.edit_text(f"💰 Ты забрал **{win_amount} Bin**!\nТвой баланс: {user['balance']} Bin", parse_mode="Markdown")
+        del games_state[uid]
+        await callback.answer()
+        return
+        
+    # Генерируем следующую карту
     next_card = random.randint(2, 14)
     while next_card == state['card']:
         next_card = random.randint(2, 14)
@@ -292,17 +322,20 @@ async def play_hilo(callback: types.CallbackQuery):
     if choice == "less" and next_card < state['card']: win = True
     
     if win:
-        win_amount = state['bet'] * 2
-        user['balance'] += win_amount
-        user['total_won'] += state['bet']
-        result_text = f"🎉 Угадал! Выигрыш: {win_amount} Bin."
-    else:
-        result_text = f"❌ Не угадал. Потеряно: {state['bet']} Bin."
+        # Увеличиваем множитель (например, на 0.5 за каждый шаг)
+        state['multiplier'] += 0.5
+        state['card'] = next_card
+        state['msg_id'] = callback.message.message_id
         
-    await callback.message.edit_text(
-        f"Была: {get_card_name(state['card'])}\nСтала: {get_card_name(next_card)}\n\n{result_text}\nБаланс: {user['balance']}"
-    )
-    del games_state[uid]
+        await send_hilo_menu(uid, callback.message.chat.id)
+        await callback.answer("Угадал! Множитель повышен.")
+    else:
+        await callback.message.edit_text(
+            f"Была: {get_card_name(state['card'])}\nСтала: {get_card_name(next_card)}\n\n"
+            f"❌ Не угадал. Потеряно: {state['bet']} Bin.\nБаланс: {user['balance']}"
+        )
+        del games_state[uid]
+        await callback.answer("Не угадал.")
 
 # --- ИГРА 4: ХОТЛАЙН (Рискнуть всем) ---
 @dp.message(F.text.lower().startswith("хотлайн "))
@@ -335,7 +368,6 @@ async def play_hotline(callback: types.CallbackQuery):
     state = games_state[uid]
     user = get_user(uid)
     
-    # Шанс выигрыша 45% (как в рулетке)
     if random.random() < 0.45:
         win = state['bet'] * 2
         user['balance'] += win
