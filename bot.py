@@ -216,13 +216,13 @@ def mines_keyboard(game_id: str, opened: set, all_opened_reveal=None):
         kb.append([InlineKeyboardButton("💰 Забрать выигрыш", callback_data=f"minecash:{game_id}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-@router.message(F.text.lower().startswith("mines"))
+@router.message(F.text.lower().startswith("мины"))
 async def cmd_mines(message: Message):
     if await check_ban_msg(message):
         return
     
     # Очищаем команду от лишних слов, чтобы найти ставку и количество мин
-    text = message.text.lower().replace("минное поле", "").replace("мины", "").replace("мин", "").strip()
+    text = message.text.lower().replace("мины", "").strip()
     parts = text.split()
     
     if len(parts) != 2:
