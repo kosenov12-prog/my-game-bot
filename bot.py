@@ -536,12 +536,11 @@ async def cmd_give(message: Message):
     if len(parts) != 2:
         await message.answer("❌ Формат: /give СУММА (ответом на сообщение)")
         return
-    try:
-            amount = int(parts[1])
+try:
+    amount = int(parts[1])
 except ValueError:
     await message.answer("❌ Сумма должна быть числом.")
-    return
-target = message.reply_to_message.from_user.id
+    returnо́
 await get_user(target)
 await update_balance(target, amount)
 await message.answer(f"✅ Начислено {fmt_num(amount)} монет игроку {target}.")
