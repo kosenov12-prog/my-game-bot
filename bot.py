@@ -11,7 +11,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.client.default import DefaultBotProperties
 import aiosqlite
 
-BOT_TOKEN = "ТВОЙ_ТОКЕН_ЗДЕСЬ"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 5118497284
 DB_PATH = "game.db"
 
