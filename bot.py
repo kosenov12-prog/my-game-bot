@@ -194,8 +194,7 @@ async def cmd_bonus(message: Message):
                          (now.isoformat(), message.from_user.id))
         await db.commit()
     await message.answer(f"🎁 <b>Бонус получен!</b>\n💵 +{fmt_num(amount)} монет")
-
-# ==================== ИГРА: МИНЫ ====================
+    # ==================== ИГРА: МИНЫ ====================
 
 active_mines = {}
 
@@ -444,8 +443,7 @@ async def cb_rps(callback: CallbackQuery):
         f"{text_result}"
     )
     await callback.answer()
-
-# ==================== АДМИН ПАНЕЛЬ ====================
+    # ==================== АДМИН ПАНЕЛЬ ====================
 
 def admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -536,15 +534,15 @@ async def cmd_give(message: Message):
     if len(parts) != 2:
         await message.answer("❌ Формат: /give СУММА (ответом на сообщение)")
         return
-try:
-    amount = int(parts[1])
-except ValueError:
-    await message.answer("❌ Сумма должна быть числом.")
-    return
-target = message.reply_to_message.from_user.id
-await get_user(target)
-await update_balance(target, amount)
-await message.answer(f"✅ Начислено {fmt_num(amount)} монет игроку {target}.")
+    try:
+        amount = int(parts[1])
+    except ValueError:
+        await message.answer("❌ Сумма должна быть числом.")
+        return
+    target = message.reply_to_message.from_user.id
+    await get_user(target)
+    await update_balance(target, amount)
+    await message.answer(f"✅ Начислено {fmt_num(amount)} монет игроку {target}.")
 
 @router.callback_query(F.data == "admin_ban_reply")
 async def cb_admin_ban_reply(callback: CallbackQuery):
