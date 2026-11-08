@@ -13,7 +13,10 @@ import aiosqlite
 
 BOT_TOKEN = "9223869999:AAGCCEcj4H7-OWqTFbAffl_PBdHX_fXfLP0"
 ADMIN_ID = 5118497284
-DB_PATH = "game.db"
+
+# Создаем папку data, если ее нет, и кладем базу туда
+os.makedirs("data", exist_ok=True)
+DB_PATH = "data/game.db"
 
 router = Router()
 
@@ -41,6 +44,17 @@ async def init_db():
                 date TEXT
             )
         """)
+        # Таблица для сохранения активных игр в Мины
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS active_mines (
+                user_id INTEGER PRIMARY KEY,
+                bet INTEGER,
+                mines_count INTEGER,
+                mines_positions TEXT,
+                opened TEXT,
+                message_id INTEGER
+            )
+        """)
         await db.commit()
 
 async def get_user(user_id: int):
@@ -60,11 +74,6 @@ async def get_user(user_id: int):
 async def update_balance(user_id: int, amount: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
-        await db.commit()
-
-async def set_balance(user_id: int, amount: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET balance = ? WHERE user_id = ?", (amount, user_id))
         await db.commit()
 
 async def set_banned(user_id: int, banned: int):
@@ -104,9 +113,6 @@ class AdminStates(StatesGroup):
     waiting_id = State()
     waiting_amount = State()
 
-class BetStates(StatesGroup):
-    waiting_rps_bet = State()
-
 # ==================== ХЕЛПЕРЫ ====================
 
 def fmt_num(n: int) -> str:
@@ -130,7 +136,9 @@ async def cmd_start(message: Message):
         "• <b>лб</b> — лидерборд за сегодня\n"
         "• <b>бонус</b> — получить бонус (раз в 10 часов)\n"
         "• <b>мины [ставка] [мин]</b> — минное поле (2-24 мины)\n"
+        "• <b>мины</b> — продолжить предыдущую игру\n"
         "• <b>кнб [ставка]</b> — камень-ножницы-бумага\n"
+        "• <b>дать [сумма]</b> — ответом на сообщение игрока\n"
     )
     if message.from_user.id == ADMIN_ID:
         text += "\n👑 <b>Админ:</b> /admin — админ-панель"
@@ -194,11 +202,9 @@ async def cmd_bonus(message: Message):
                          (now.isoformat(), message.from_user.id))
         await db.commit()
     await message.answer(f"🎁 <b>Бонус получен!</b>\n💵 +{fmt_num(amount)} монет")
-# ==================== ИГРА: МИНЫ ====================
+    # ==================== ИГРА: МИНЫ ====================
 
-active_mines = {}
-
-def mines_keyboard(game_id: str, opened: set, all_opened_reveal=None):
+def mines_keyboard(user_id: int, opened: set, all_opened_reveal=None):
     kb = []
     for row in range(5):
         line = []
@@ -210,117 +216,41 @@ def mines_keyboard(game_id: str, opened: set, all_opened_reveal=None):
                 else:
                     line.append(InlineKeyboardButton("💎", callback_data="none"))
             else:
-                line.append(InlineKeyboardButton("⬜", callback_data=f"mine:{game_id}:{idx}"))
+                line.append(InlineKeyboardButton("⬜", callback_data=f"mine:{user_id}:{idx}"))
         kb.append(line)
     if all_opened_reveal is None:
-        kb.append([InlineKeyboardButton("💰 Забрать выигрыш", callback_data=f"minecash:{game_id}")])
+        kb.append([InlineKeyboardButton("💰 Забрать выигрыш", callback_data=f"minecash:{user_id}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-@router.message(F.text.lower().startswith("мины"))
-async def cmd_mines(message: Message):
-    if await check_ban_msg(message):
-        return
-    
-    # Очищаем команду от лишних слов, чтобы найти ставку и количество мин
-    text = message.text.lower().replace("мины", "").strip()
-    parts = text.split()
-    
-    if len(parts) != 2:
-        await message.answer("❌ Формат: <code>мины [ставка] [мин]</code>\nПример: <code>мины 100 2</code>")
-        return
-        
-    try:
-        bet = int(parts[0])
-        mines_count = int(parts[1])
-    except ValueError:
-        await message.answer("❌ Ставка и количество мин должны быть числами.")
-        return
-
-    if mines_count < 1 or mines_count > 24:
-        await message.answer("❌ Количество мин должно быть от 1 до 24.")
-        return
-
-    user = await get_user(message.from_user.id)
-    if bet <= 0:
-        await message.answer("❌ Ставка должна быть больше 0.")
-        return
-    if bet > user[1]:
-        await message.answer("❌ Недостаточно средств.")
-        return
-
-    await update_balance(message.from_user.id, -bet)
-
-    positions = list(range(25))
-    random.shuffle(positions)
-    mines_positions = set(positions[:mines_count])
-
-    game_id = f"{message.from_user.id}_{int(datetime.now().timestamp() * 1000)}"
-    active_mines[game_id] = {
-        "user_id": message.from_user.id,
-        "bet": bet,
-        "mines": mines_positions,
-        "opened": set(),
-        "mines_count": mines_count,
-        "multiplier": 1.0,
-    }
-
-    def calc_multiplier(opened_count, mines_count):
-        if opened_count == 0:
-            return 1.0
-        # Формула из статьи: 0.97 / вероятность пройти opened_count выборов подряд
-        # Вероятность = (25 - mines) / 25 * (24 - mines) / 24 * ...
-        prob = 1.0
-        for i in range(opened_count):
-            prob *= (25 - mines_count - i) / (25 - i)
-        return round(0.97 / prob, 2)
-
-    active_mines[game_id]["calc"] = calc_multiplier
-
-    await message.answer(
-        f"💣 <b>Минное поле</b>\n"
-        f"Ставка: {fmt_num(bet)} | Мин: {mines_count}\n"
-        f"Открывай клетки. Чем больше открыл — тем больше выигрыш!\n"
-        f"Множитель: <b>1.00x</b> | Выигрыш: <b>0</b>",
-        reply_markup=mines_keyboard(game_id, set())
-    )
-
-@router.callback_query(F.data.startswith("mine:"))
-async def cb_mine_open(callback: CallbackQuery):
-    _, game_id, idx_str = callback.data.split(":")
-    idx = int(idx_str)
-    game = active_mines.get(game_id)
-    if not game:
-        await callback.answer("Игра не найдена.", show_alert=True)
-        return
-    if game["user_id"] != callback.from_user.id:
-        await callback.answer("Это не твоя игра.", show_alert=True)
-        return
-    if idx in game["opened"]:
-        await callback.answer("Уже открыто.")
-        return
-
-    if idx in game["mines"]:
-        reveal = {i: ("mine" if i in game["mines"] else "safe") for i in range(25)}
-        for i in game["opened"]:
-            reveal[i] = "safe"
-        del active_mines[game_id]
-        await log_game(callback.from_user.id, "mines", game["bet"], -game["bet"])
-        await callback.message.edit_text(
-            f"💥 <b>БУМ! Ты наткнулся на мину.</b>\n"
-            f"Потеряно: {fmt_num(game['bet'])} монет",
-            reply_markup=mines_keyboard(game_id, game["opened"] | {idx}, reveal)
-@router.message(F.text.lower().startswith("мины"))
-async def cmd_mines(message: Message):
-    if await check_ban_msg(message):
 @router.message(F.text.lower().startswith(("мины", "mines")))
 async def cmd_mines(message: Message):
     if await check_ban_msg(message):
         return
     
-    # Очищаем команду от слов "мины" или "mines", оставляя только цифры
-    text = message.text.lower().replace("мины", "").replace("mines", "").strip()
-    parts = text.split()
+    parts = message.text.lower().replace("мины", "").replace("mines", "").strip().split()
     
+    # Если игрок написал просто "мины" - ищем сохраненную игру
+    if len(parts) == 0:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT bet, mines_count, mines_positions, opened FROM active_mines WHERE user_id = ?", (message.from_user.id,)) as cur:
+                game = await cur.fetchone()
+        if game:
+            bet, mines_count, mines_positions_json, opened_json = game
+            opened = set(json.loads(opened_json))
+            mult = calc_multiplier(len(opened), mines_count)
+            win = int(bet * mult)
+            await message.answer(
+                f"💣 <b>Твоя предыдущая игра:</b>\n"
+                f"Ставка: {fmt_num(bet)} | Мин: {mines_count}\n"
+                f"Открыто: {len(opened)}/25\n"
+                f"Множитель: <b>{mult:.2f}x</b> | Выигрыш: <b>{fmt_num(win)}</b>",
+                reply_markup=mines_keyboard(message.from_user.id, opened)
+            )
+            return
+        else:
+            await message.answer("❌ У тебя нет активной игры. Напиши <code>мины [ставка] [мин]</code> для начала.")
+            return
+
     if len(parts) != 2:
         await message.answer("❌ Формат: <code>мины [ставка] [мин]</code>\nПример: <code>мины 100 2</code>")
         return
@@ -344,215 +274,161 @@ async def cmd_mines(message: Message):
         await message.answer("❌ Недостаточно средств.")
         return
 
+    # Удаляем старую игру, если была
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM active_mines WHERE user_id = ?", (message.from_user.id,))
+        await db.commit()
+
     await update_balance(message.from_user.id, -bet)
 
     positions = list(range(25))
     random.shuffle(positions)
-    mines_positions = set(positions[:mines_count])
+    mines_positions = positions[:mines_count]
 
-    game_id = f"{message.from_user.id}_{int(datetime.now().timestamp() * 1000)}"
-    active_mines[game_id] = {
-        "user_id": message.from_user.id,
-        "bet": bet,
-        "mines": mines_positions,
-        "opened": set(),
-        "mines_count": mines_count,
-        "multiplier": 1.0,
-    }
-
-    def calc_multiplier(opened_count, mines_count):
-        if opened_count == 0:
-            return 1.0
-        prob = 1.0
-        for i in range(opened_count):
-            prob *= (25 - mines_count - i) / (25 - i)
-        return round(0.97 / prob, 2)
-
-    active_mines[game_id]["calc"] = calc_multiplier
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO active_mines (user_id, bet, mines_count, mines_positions, opened) VALUES (?, ?, ?, ?, ?)",
+            (message.from_user.id, bet, mines_count, json.dumps(mines_positions), json.dumps([]))
+        )
+        await db.commit()
 
     await message.answer(
         f"💣 <b>Минное поле</b>\n"
         f"Ставка: {fmt_num(bet)} | Мин: {mines_count}\n"
         f"Открывай клетки. Чем больше открыл — тем больше выигрыш!\n"
         f"Множитель: <b>1.00x</b> | Выигрыш: <b>0</b>",
-        reply_markup=mines_keyboard(game_id, set())
+        reply_markup=mines_keyboard(message.from_user.id, set())
     )
+
+def calc_multiplier(opened_count, mines_count):
+    if opened_count == 0:
+        return 1.0
+    prob = 1.0
+    for i in range(opened_count):
+        prob *= (25 - mines_count - i) / (25 - i)
+    return round(0.97 / prob, 2)
 
 @router.callback_query(F.data.startswith("mine:"))
 async def cb_mine_open(callback: CallbackQuery):
-    _, game_id, idx_str = callback.data.split(":")
+    _, user_id_str, idx_str = callback.data.split(":")
+    user_id = int(user_id_str)
     idx = int(idx_str)
-    game = active_mines.get(game_id)
-    if not game:
-        await callback.answer("Игра не найдена.", show_alert=True)
-        return
-    if game["user_id"] != callback.from_user.id:
+    
+    if user_id != callback.from_user.id:
         await callback.answer("Это не твоя игра.", show_alert=True)
         return
-    if idx in game["opened"]:
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT bet, mines_count, mines_positions, opened FROM active_mines WHERE user_id = ?", (user_id,)) as cur:
+            game = await cur.fetchone()
+    
+    if not game:
+        await callback.answer("Игра не найдена или уже завершена.", show_alert=True)
+        return
+
+    bet, mines_count, mines_positions_json, opened_json = game
+    mines_positions = set(json.loads(mines_positions_json))
+    opened = set(json.loads(opened_json))
+
+    if idx in opened:
         await callback.answer("Уже открыто.")
         return
 
-    if idx in game["mines"]:
-        reveal = {i: ("mine" if i in game["mines"] else "safe") for i in range(25)}
-        for i in game["opened"]:
+    if idx in mines_positions:
+        reveal = {i: ("mine" if i in mines_positions else "safe") for i in range(25)}
+        for i in opened:
             reveal[i] = "safe"
-        del active_mines[game_id]
-        await log_game(callback.from_user.id, "mines", game["bet"], -game["bet"])
+        
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM active_mines WHERE user_id = ?", (user_id,))
+            await db.commit()
+            
+        await log_game(user_id, "mines", bet, -bet)
         await callback.message.edit_text(
             f"💥 <b>БУМ! Ты наткнулся на мину.</b>\n"
-            f"Потеряно: {fmt_num(game['bet'])} монет",
-            reply_markup=mines_keyboard(game_id, game["opened"] | {idx}, reveal)
+            f"Потеряно: {fmt_num(bet)} монет",
+            reply_markup=mines_keyboard(user_id, opened | {idx}, reveal)
         )
         await callback.answer("💥 Мина!")
         return
 
-    game["opened"].add(idx)
-    opened_count = len(game["opened"])
-    mult = game["calc"](opened_count, game["mines_count"])
-    game["multiplier"] = mult
-    win = int(game["bet"] * mult)
+    opened.add(idx)
+    opened_count = len(opened)
+    mult = calc_multiplier(opened_count, mines_count)
+    win = int(bet * mult)
 
-    safe_total = 25 - game["mines_count"]
+    safe_total = 25 - mines_count
     if opened_count >= safe_total:
-        await update_balance(callback.from_user.id, win)
-        await add_daily_win(callback.from_user.id, win - game["bet"])
-        await log_game(callback.from_user.id, "mines", game["bet"], win - game["bet"])
-        reveal = {i: ("mine" if i in game["mines"] else "safe") for i in range(25)}
-        del active_mines[game_id]
+        await update_balance(user_id, win)
+        await add_daily_win(user_id, win - bet)
+        await log_game(user_id, "mines", bet, win - bet)
+        
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM active_mines WHERE user_id = ?", (user_id,))
+            await db.commit()
+            
+        reveal = {i: ("mine" if i in mines_positions else "safe") for i in range(25)}
         await callback.message.edit_text(
             f"🎉 <b>ПОБЕДА! Все клетки открыты!</b>\n"
             f"Выигрыш: <b>{fmt_num(win)}</b> монет (x{mult:.2f})",
-            reply_markup=mines_keyboard(game_id, game["opened"], reveal)
+            reply_markup=mines_keyboard(user_id, opened, reveal)
         )
         await callback.answer("🎉 Победа!")
         return
 
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE active_mines SET opened = ? WHERE user_id = ?", (json.dumps(list(opened)), user_id))
+        await db.commit()
+
     await callback.message.edit_text(
         f"💣 <b>Минное поле</b>\n"
-        f"Ставка: {fmt_num(game['bet'])} | Мин: {game['mines_count']}\n"
+        f"Ставка: {fmt_num(bet)} | Мин: {mines_count}\n"
         f"Открыто: {opened_count}/{safe_total}\n"
         f"Множитель: <b>{mult:.2f}x</b> | Выигрыш: <b>{fmt_num(win)}</b>",
-        reply_markup=mines_keyboard(game_id, game["opened"])
+        reply_markup=mines_keyboard(user_id, opened)
     )
     await callback.answer(f"💎 Безопасно! x{mult:.2f}")
 
 @router.callback_query(F.data.startswith("minecash:"))
 async def cb_mine_cash(callback: CallbackQuery):
-    game_id = callback.data.split(":")[1]
-    game = active_mines.get(game_id)
+    user_id = int(callback.data.split(":")[1])
+    
+    if user_id != callback.from_user.id:
+        await callback.answer("Это не твоя игра.", show_alert=True)
+        return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT bet, mines_count, mines_positions, opened FROM active_mines WHERE user_id = ?", (user_id,)) as cur:
+            game = await cur.fetchone()
+    
     if not game:
         await callback.answer("Игра не найдена.", show_alert=True)
         return
-    if game["user_id"] != callback.from_user.id:
-        await callback.answer("Это не твоя игра.", show_alert=True)
-        return
-    if not game["opened"]:
+
+    bet, mines_count, mines_positions_json, opened_json = game
+    mines_positions = set(json.loads(mines_positions_json))
+    opened = set(json.loads(opened_json))
+
+    if not opened:
         await callback.answer("Сначала открой хотя бы одну клетку!", show_alert=True)
         return
 
-    win = int(game["bet"] * game["multiplier"])
-    await update_balance(callback.from_user.id, win)
-    await add_daily_win(callback.from_user.id, win - game["bet"])
-    await log_game(callback.from_user.id, "mines", game["bet"], win - game["bet"])
+    mult = calc_multiplier(len(opened), mines_count)
+    win = int(bet * mult)
+    
+    await update_balance(user_id, win)
+    await add_daily_win(user_id, win - bet)
+    await log_game(user_id, "mines", bet, win - bet)
 
-    reveal = {i: ("mine" if i in game["mines"] else "safe") for i in range(25)}
-    del active_mines[game_id]
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM active_mines WHERE user_id = ?", (user_id,))
+        await db.commit()
 
+    reveal = {i: ("mine" if i in mines_positions else "safe") for i in range(25)}
     await callback.message.edit_text(
         f"💰 <b>Выигрыш забран!</b>\n"
-        f"Выигрыш: <b>{fmt_num(win)}</b> монет (x{game['multiplier']:.2f})",
-        reply_markup=mines_keyboard(game_id, game["opened"], reveal)
-    )
-    await callback.answer("💰 Забрано!")
-        reply_markup=mines_keyboard(game_id, set())
-    )
-
-@router.callback_query(F.data.startswith("mine:"))
-async def cb_mine_open(callback: CallbackQuery):
-    _, game_id, idx_str = callback.data.split(":")
-    idx = int(idx_str)
-    game = active_mines.get(game_id)
-    if not game:
-        await callback.answer("Игра не найдена.", show_alert=True)
-        return
-    if game["user_id"] != callback.from_user.id:
-        await callback.answer("Это не твоя игра.", show_alert=True)
-        return
-    if idx in game["opened"]:
-        await callback.answer("Уже открыто.")
-        return
-
-    if idx in game["mines"]:
-        reveal = {i: ("mine" if i in game["mines"] else "safe") for i in range(25)}
-        for i in game["opened"]:
-            reveal[i] = "safe"
-        del active_mines[game_id]
-        await log_game(callback.from_user.id, "mines", game["bet"], -game["bet"])
-        await callback.message.edit_text(
-            f"💥 <b>БУМ! Ты наткнулся на мину.</b>\n"
-            f"Потеряно: {fmt_num(game['bet'])} монет",
-            reply_markup=mines_keyboard(game_id, game["opened"] | {idx}, reveal)
-        )
-        await callback.answer("💥 Мина!")
-        return
-
-    game["opened"].add(idx)
-    opened_count = len(game["opened"])
-    mult = game["calc"](opened_count, game["mines_count"])
-    game["multiplier"] = mult
-    win = int(game["bet"] * mult)
-
-    safe_total = 25 - game["mines_count"]
-    if opened_count >= safe_total:
-        await update_balance(callback.from_user.id, win)
-        await add_daily_win(callback.from_user.id, win - game["bet"])
-        await log_game(callback.from_user.id, "mines", game["bet"], win - game["bet"])
-        reveal = {i: ("mine" if i in game["mines"] else "safe") for i in range(25)}
-        del active_mines[game_id]
-        await callback.message.edit_text(
-            f"🎉 <b>ПОБЕДА! Все клетки открыты!</b>\n"
-            f"Выигрыш: <b>{fmt_num(win)}</b> монет (x{mult:.2f})",
-            reply_markup=mines_keyboard(game_id, game["opened"], reveal)
-        )
-        await callback.answer("🎉 Победа!")
-        return
-
-    await callback.message.edit_text(
-        f"💣 <b>Минное поле</b>\n"
-        f"Ставка: {fmt_num(game['bet'])} | Мин: {game['mines_count']}\n"
-        f"Открыто: {opened_count}/{safe_total}\n"
-        f"Множитель: <b>{mult:.2f}x</b> | Выигрыш: <b>{fmt_num(win)}</b>",
-        reply_markup=mines_keyboard(game_id, game["opened"])
-    )
-    await callback.answer(f"💎 Безопасно! x{mult:.2f}")
-
-@router.callback_query(F.data.startswith("minecash:"))
-async def cb_mine_cash(callback: CallbackQuery):
-    game_id = callback.data.split(":")[1]
-    game = active_mines.get(game_id)
-    if not game:
-        await callback.answer("Игра не найдена.", show_alert=True)
-        return
-    if game["user_id"] != callback.from_user.id:
-        await callback.answer("Это не твоя игра.", show_alert=True)
-        return
-    if not game["opened"]:
-        await callback.answer("Сначала открой хотя бы одну клетку!", show_alert=True)
-        return
-
-    win = int(game["bet"] * game["multiplier"])
-    await update_balance(callback.from_user.id, win)
-    await add_daily_win(callback.from_user.id, win - game["bet"])
-    await log_game(callback.from_user.id, "mines", game["bet"], win - game["bet"])
-
-    reveal = {i: ("mine" if i in game["mines"] else "safe") for i in range(25)}
-    del active_mines[game_id]
-
-    await callback.message.edit_text(
-        f"💰 <b>Выигрыш забран!</b>\n"
-        f"Выигрыш: <b>{fmt_num(win)}</b> монет (x{game['multiplier']:.2f})",
-        reply_markup=mines_keyboard(game_id, game["opened"], reveal)
+        f"Выигрыш: <b>{fmt_num(win)}</b> монет (x{mult:.2f})",
+        reply_markup=mines_keyboard(user_id, opened, reveal)
     )
     await callback.answer("💰 Забрано!")
 
@@ -605,15 +481,12 @@ async def cb_rps(callback: CallbackQuery):
 
     if player_choice == bot_choice:
         result = "draw"
-        delta = 0
     elif (player_choice == "rock" and bot_choice == "scissors") or \
          (player_choice == "scissors" and bot_choice == "paper") or \
          (player_choice == "paper" and bot_choice == "rock"):
         result = "win"
-        delta = bet
     else:
         result = "lose"
-        delta = -bet
 
     if result == "win":
         await update_balance(callback.from_user.id, bet * 2)
@@ -634,7 +507,64 @@ async def cb_rps(callback: CallbackQuery):
         f"{text_result}"
     )
     await callback.answer()
-    # ==================== АДМИН ПАНЕЛЬ ====================
+    # ==================== ВЫДАЧА МОНЕТ (ДАТЬ) ====================
+
+@router.message(F.text.lower().startswith("дать"))
+async def cmd_transfer(message: Message):
+    if await check_ban_msg(message):
+        return
+
+    parts = message.text.split()
+    
+    if len(parts) != 2 and len(parts) != 3:
+        await message.answer("❌ Формат: ответь на сообщение игрока командой <code>дать [сумма]</code>\nИли: <code>дать [сумма] [ID]</code>")
+        return
+
+    try:
+        amount = int(parts[1])
+    except ValueError:
+        await message.answer("❌ Сумма должна быть числом.")
+        return
+
+    if amount <= 0:
+        await message.answer("❌ Сумма должна быть больше 0.")
+        return
+
+    target = None
+    if len(parts) == 3:
+        try:
+            target = int(parts[2])
+        except ValueError:
+            await message.answer("❌ Некорректный ID получателя.")
+            return
+    elif message.reply_to_message:
+        target = message.reply_to_message.from_user.id
+
+    if not target:
+        await message.answer("❌ Ответь на сообщение игрока или укажи его ID.")
+        return
+
+    if target == message.from_user.id:
+        await message.answer("❌ Нельзя выдать монеты самому себе.")
+        return
+
+    sender = await get_user(message.from_user.id)
+    await get_user(target)
+
+    if message.from_user.id != ADMIN_ID:
+        if amount > 50000:
+            await message.answer("❌ Максимальная сумма для выдачи игрокам — 50 000 монет.")
+            return
+        if sender[1] < amount:
+            await message.answer("❌ Недостаточно средств для выдачи.")
+            return
+
+    await update_balance(message.from_user.id, -amount)
+    await update_balance(target, amount)
+
+    await message.answer(f"💸 Успешно выдано <b>{fmt_num(amount)}</b> монет игроку <code>{target}</code>.")
+
+# ==================== АДМИН ПАНЕЛЬ ====================
 
 def admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
