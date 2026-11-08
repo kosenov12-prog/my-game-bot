@@ -527,12 +527,12 @@ def hilo_keyboard(user_id: int, current_card_rank):
     kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback_data=f"hilocash:{user_id}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-@router.message(F.text.lower().startswith("х"))
+@router.message(F.text.lower().regexp(r'^(хило|хл|hilo)'))
 async def cmd_hilo(message: Message):
     if await check_ban_msg(message):
         return
     
-    parts = message.text.lower().replace("хило", "").replace("хл", "").replace("hilo", "").strip().split()
+    parts = message.text.lower().split()[1:]
     
     if len(parts) == 0:
         if message.from_user.id in active_hilo:
