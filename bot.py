@@ -218,7 +218,12 @@ def mines_keyboard(user_id: int, opened: set, all_opened_reveal=None):
                 else:
                     line.append(InlineKeyboardButton(text="💎", callback_data="none"))
             else:
-                line.append(InlineKeyboardButton(text="⬜", callback_data=f"mine:{user_id}:{idx}"))
+                # Если игра закончена (передан all_opened_reveal), показываем мины
+                if all_opened_reveal and all_opened_reveal[idx] == "mine":
+                    line.append(InlineKeyboardButton(text="💥", callback_data="none"))
+                else:
+                    # В остальных случаях показываем закрытую клетку 🔒
+                    line.append(InlineKeyboardButton(text="🔒", callback_data=f"mine:{user_id}:{idx}"))
         kb.append(line)
     
     if all_opened_reveal is None:
@@ -331,7 +336,8 @@ async def cb_mine_open(callback: CallbackQuery):
         
         await callback.message.edit_text(
             f"💥 <b>БУМ! Ты наткнулся на мину.</b>\n"
-            f"Потеряно: {fmt_num(game['bet'])} монет",
+            f"Потеряно: {fmt_num(game['bet'])} монет\n\n"
+            f"<i>Вот где были мины:</i>",
             reply_markup=mines_keyboard(user_id, game["opened"] | {idx}, reveal)
         )
         await callback.answer("💥 Мина!")
@@ -378,13 +384,30 @@ async def cb_mine_cash(callback: CallbackQuery):
 
     del active_mines[user_id]
 
+    # Показываем ВСЕ клетки: где были мины, где мы открыли, и где остались безопасные
     reveal = {i: ("mine" if i in game["mines"] else "safe") for i in range(25)}
+    
     await callback.message.edit_text(
         f"💰 <b>Выигрыш забран!</b>\n"
-        f"Выигрыш: <b>{fmt_num(win)}</b> монет (x{mult:.2f})",
+        f"Выигрыш: <b>{fmt_num(win)}</b> монет (x{mult:.2f})\n\n"
+        f"<i>Вот где были мины:</i>",
         reply_markup=mines_keyboard(user_id, game["opened"], reveal)
     )
     await callback.answer("💰 Забрано!")
+
+# ==================== ЗАПУСК ====================
+
+async def main():
+    await init_db()
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+    dp = Dispatcher()
+    dp.include_router(router)
+    print("Бот запущен...")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
 
 # ==================== ЗАПУСК ====================
 
