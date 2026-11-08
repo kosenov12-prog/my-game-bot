@@ -43,7 +43,6 @@ async def init_db():
         """)
         await db.commit()
 
-
 async def get_user(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)) as cur:
@@ -58,24 +57,20 @@ async def get_user(user_id: int):
                 row = await cur.fetchone()
     return row
 
-
 async def update_balance(user_id: int, amount: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
         await db.commit()
-
 
 async def set_balance(user_id: int, amount: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE users SET balance = ? WHERE user_id = ?", (amount, user_id))
         await db.commit()
 
-
 async def set_banned(user_id: int, banned: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE users SET banned = ? WHERE user_id = ?", (banned, user_id))
         await db.commit()
-
 
 async def add_daily_win(user_id: int, amount: int):
     today = datetime.now().strftime("%Y-%m-%d")
@@ -88,7 +83,6 @@ async def add_daily_win(user_id: int, amount: int):
             await db.execute("UPDATE users SET daily_won = daily_won + ? WHERE user_id = ?", (amount, user_id))
         await db.commit()
 
-
 async def log_game(user_id: int, game: str, bet: int, win: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -97,13 +91,11 @@ async def log_game(user_id: int, game: str, bet: int, win: int):
         )
         await db.commit()
 
-
 async def is_banned(user_id: int):
     if user_id == ADMIN_ID:
         return False
     user = await get_user(user_id)
     return user[2] == 1
-
 
 # ==================== СОСТОЯНИЯ ====================
 
@@ -119,7 +111,6 @@ class BetStates(StatesGroup):
 
 def fmt_num(n: int) -> str:
     return f"{n:,}".replace(",", " ")
-
 
 async def check_ban_msg(message: Message) -> bool:
     if await is_banned(message.from_user.id):
@@ -145,7 +136,6 @@ async def cmd_start(message: Message):
         text += "\n👑 <b>Админ:</b> /admin — админ-панель"
     await message.answer(text)
 
-
 @router.message(F.text.lower() == "б")
 async def cmd_balance(message: Message):
     user = await get_user(message.from_user.id)
@@ -153,7 +143,6 @@ async def cmd_balance(message: Message):
         f"💰 <b>Ваш баланс:</b> {fmt_num(user[1])} монет\n"
         f"📊 <b>Заработано сегодня:</b> {fmt_num(user[4])} монет"
     )
-
 
 @router.message(F.text.lower() == "лб")
 async def cmd_leaderboard(message: Message):
@@ -181,7 +170,6 @@ async def cmd_leaderboard(message: Message):
         text += f"{medal} {name} — {fmt_num(won)} монет\n"
     await message.answer(text)
 
-
 @router.message(F.text.lower() == "бонус")
 async def cmd_bonus(message: Message):
     if await check_ban_msg(message):
@@ -207,10 +195,8 @@ async def cmd_bonus(message: Message):
         await db.commit()
     await message.answer(f"🎁 <b>Бонус получен!</b>\n💵 +{fmt_num(amount)} монет")
 
-
 # ==================== ИГРА: МИНЫ ====================
 
-# game_id -> dict с данными игры
 active_mines = {}
 
 def mines_keyboard(game_id: str, opened: set, all_opened_reveal=None):
@@ -230,7 +216,6 @@ def mines_keyboard(game_id: str, opened: set, all_opened_reveal=None):
     if all_opened_reveal is None:
         kb.append([InlineKeyboardButton("💰 Забрать выигрыш", callback_data=f"minecash:{game_id}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
-
 
 @router.message(F.text.lower().startswith("мины"))
 async def cmd_mines(message: Message):
@@ -259,10 +244,8 @@ async def cmd_mines(message: Message):
         await message.answer("❌ Недостаточно средств.")
         return
 
-    # Списание ставки
     await update_balance(message.from_user.id, -bet)
 
-    # Генерация поля
     positions = list(range(25))
     random.shuffle(positions)
     mines_positions = set(positions[:mines_count])
@@ -277,15 +260,13 @@ async def cmd_mines(message: Message):
         "multiplier": 1.0,
     }
 
-    # Расчёт множителя
     def calc_multiplier(opened_count, mines_count):
-        # множитель = (25 / (25 - mines))^opened, с небольшим house edge
         if opened_count == 0:
             return 1.0
         m = 1.0
         for i in range(opened_count):
             m *= (25 - i) / (25 - mines_count - i)
-        return m * 0.95  # house edge 5%
+        return m * 0.95
 
     active_mines[game_id]["calc"] = calc_multiplier
 
@@ -296,7 +277,6 @@ async def cmd_mines(message: Message):
         f"Множитель: <b>1.00x</b> | Выигрыш: <b>0</b>",
         reply_markup=mines_keyboard(game_id, set())
     )
-
 
 @router.callback_query(F.data.startswith("mine:"))
 async def cb_mine_open(callback: CallbackQuery):
@@ -314,7 +294,6 @@ async def cb_mine_open(callback: CallbackQuery):
         return
 
     if idx in game["mines"]:
-        # Проигрыш
         reveal = {i: ("mine" if i in game["mines"] else "safe") for i in range(25)}
         for i in game["opened"]:
             reveal[i] = "safe"
@@ -334,7 +313,6 @@ async def cb_mine_open(callback: CallbackQuery):
     game["multiplier"] = mult
     win = int(game["bet"] * mult)
 
-    # Если открыты все безопасные клетки — авто-победа
     safe_total = 25 - game["mines_count"]
     if opened_count >= safe_total:
         await update_balance(callback.from_user.id, win)
@@ -358,7 +336,6 @@ async def cb_mine_open(callback: CallbackQuery):
         reply_markup=mines_keyboard(game_id, game["opened"])
     )
     await callback.answer(f"💎 Безопасно! x{mult:.2f}")
-
 
 @router.callback_query(F.data.startswith("minecash:"))
 async def cb_mine_cash(callback: CallbackQuery):
@@ -388,7 +365,6 @@ async def cb_mine_cash(callback: CallbackQuery):
         reply_markup=mines_keyboard(game_id, game["opened"], reveal)
     )
     await callback.answer("💰 Забрано!")
-
 
 # ==================== ИГРА: КНБ ====================
 
@@ -420,7 +396,6 @@ async def cmd_rps(message: Message):
         InlineKeyboardButton("📄 Бумага", callback_data=f"rps:{bet}:paper"),
     ]])
     await message.answer(f"🎮 Выбери свой ход (ставка {fmt_num(bet)}):", reply_markup=kb)
-
 
 @router.callback_query(F.data.startswith("rps:"))
 async def cb_rps(callback: CallbackQuery):
@@ -459,7 +434,7 @@ async def cb_rps(callback: CallbackQuery):
         await log_game(callback.from_user.id, "rps", bet, -bet)
         text_result = f"😢 <b>Проигрыш.</b> -{fmt_num(bet)} монет"
     else:
-        await update_balance(callback.from_user.id, bet)  # возврат ставки
+        await update_balance(callback.from_user.id, bet)
         await log_game(callback.from_user.id, "rps", bet, 0)
         text_result = "🤝 <b>Ничья.</b> Ставка возвращена."
 
@@ -469,7 +444,6 @@ async def cb_rps(callback: CallbackQuery):
         f"{text_result}"
     )
     await callback.answer()
-
 
 # ==================== АДМИН ПАНЕЛЬ ====================
 
@@ -482,14 +456,12 @@ def admin_kb():
         [InlineKeyboardButton("👑 Начислить себе 5118497284", callback_data="admin_give_self")],
     ])
 
-
 @router.message(Command("admin"))
 async def cmd_admin(message: Message):
     if message.from_user.id != ADMIN_ID:
         await message.answer("❌ Доступ запрещён.")
         return
     await message.answer("👑 <b>Админ-панель</b>\nВыбери действие:", reply_markup=admin_kb())
-
 
 @router.callback_query(F.data == "admin_give_self")
 async def cb_admin_give_self(callback: CallbackQuery, state: FSMContext):
@@ -500,7 +472,6 @@ async def cb_admin_give_self(callback: CallbackQuery, state: FSMContext):
     await state.update_data(target_id=ADMIN_ID)
     await callback.message.edit_text("💰 Введите сумму для начисления себе (5118497284):")
     await callback.answer()
-
 
 @router.callback_query(F.data == "admin_give_reply")
 async def cb_admin_give_reply(callback: CallbackQuery, state: FSMContext):
@@ -515,7 +486,6 @@ async def cb_admin_give_reply(callback: CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
-
 @router.callback_query(F.data == "admin_give_id")
 async def cb_admin_give_id(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
@@ -524,7 +494,6 @@ async def cb_admin_give_id(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_id)
     await callback.message.edit_text("💰 Введите ID игрока:")
     await callback.answer()
-
 
 @router.message(AdminStates.waiting_id)
 async def admin_waiting_id(message: Message, state: FSMContext):
@@ -539,7 +508,6 @@ async def admin_waiting_id(message: Message, state: FSMContext):
     await state.set_state(AdminStates.waiting_amount)
     await message.answer(f"💰 Введите сумму для начисления игроку <code>{target}</code>:")
 
-
 @router.message(AdminStates.waiting_amount)
 async def admin_waiting_amount(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
@@ -552,109 +520,11 @@ async def admin_waiting_amount(message: Message, state: FSMContext):
     data = await state.get_data()
     target = data.get("target_id")
     await state.clear()
-        await message.answer(f"✅ Начислено {fmt_num(amount)} монет игроку <code>{target}</code>.")
+    await get_user(target)
+    await update_balance(target, amount)
+    await message.answer(f"✅ Начислено {fmt_num(amount)} монет игроку <code>{target}</code>.")
 
 @router.message(Command("give"))
 async def cmd_give(message: Message):
     if message.from_user.id != ADMIN_ID:
-        await message.answer("❌ Доступ запрещён.")
-        return
-    if not message.reply_to_message:
-        await message.answer("❌ Ответь на сообщение игрока командой /give СУММА")
-        return
-    parts = message.text.split()
-    if len(parts) != 2:
-        await message.answer("❌ Формат: /give СУММА (ответом на сообщение)")
-        return
-    try:
-        amount = int(parts[1])
-    except ValueError:
-        await message.answer("❌ Сумма должна быть числом.")
-        return
-    target = message.reply_to_message.from_user.id
-    await get_user(target)
-    await update_balance(target, amount)
-    await message.answer(f"✅ Начислено {fmt_num(amount)} монет игроку {target}.")
-
-
-@router.callback_query(F.data == "admin_ban_reply")
-async def cb_admin_ban_reply(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Нет доступа.", show_alert=True)
-        return
-    await callback.message.edit_text(
-        "🚫 <b>Бан</b>\n\nОтветь на сообщение игрока: <code>/ban</code>\n"
-        "Также: <code>/ban ID</code>"
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "admin_unban_reply")
-async def cb_admin_unban_reply(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Нет доступа.", show_alert=True)
-        return
-    await callback.message.edit_text(
-        "✅ <b>Разбан</b>\n\nОтветь на сообщение игрока: <code>/unban</code>\n"
-        "Также: <code>/unban ID</code>"
-    )
-    await callback.answer()
-
-
-@router.message(Command("ban"))
-async def cmd_ban(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    target = None
-    if message.reply_to_message:
-        target = message.reply_to_message.from_user.id
-    else:
-        parts = message.text.split()
-        if len(parts) == 2:
-            try:
-                target = int(parts[1])
-            except ValueError:
-                pass
-    if not target:
-        await message.answer("❌ Ответь на сообщение игрока или укажи ID: /ban ID")
-        return
-    await get_user(target)
-    await set_banned(target, 1)
-    await message.answer(f"🚫 Игрок <code>{target}</code> забанен.")
-
-
-@router.message(Command("unban"))
-async def cmd_unban(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    target = None
-    if message.reply_to_message:
-        target = message.reply_to_message.from_user.id
-    else:
-        parts = message.text.split()
-        if len(parts) == 2:
-            try:
-                target = int(parts[1])
-            except ValueError:
-                pass
-    if not target:
-        await message.answer("❌ Ответь на сообщение игрока или укажи ID: /unban ID")
-        return
-    await get_user(target)
-    await set_banned(target, 0)
-    await message.answer(f"✅ Игрок <code>{target}</code> разбанен.")
-
-
-# ==================== ЗАПУСК ====================
-
-async def main():
-    await init_db()
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-    dp = Dispatcher()
-    dp.include_router(router)  # <--- ТА САМАЯ ВАЖНАЯ СТРОЧКА
-    print("Бот запущен...")
-    await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        await message.a
