@@ -474,14 +474,114 @@ async def cmd_hilo(message: Message):
         "multiplier": 1.0,
     }
 
+# ==================== ИГРА: HI-LO (ХАЙ-ЛОУ) ====================
+
+active_hilo = {}
+
+SUITS = ["♠️", "♥️", "♦️", "♣️"]
+RANKS = {
+    2: "2", 3: "3", 4: "4", 5: "5", 6: "6", 7: "7", 8: "8", 9: "9", 10: "10",
+    11: "J", 12: "Q", 13: "K", 14: "A"
+}
+
+def draw_card():
+    rank = random.randint(2, 14)
+    suit = random.choice(SUITS)
+    return rank, suit
+
+def get_card_str(rank, suit):
+    return f"<b>{RANKS[rank]}</b> {suit}"
+
+def calc_hilo_mult(current_rank, guess):
+    if guess == "high":
+        higher_ranks = 14 - current_rank
+        cards_win = higher_ranks * 4
+    elif guess == "low":
+        lower_ranks = current_rank - 2
+        cards_win = lower_ranks * 4
+    else:
+        return 1.0
+
+    if cards_win == 0:
+        return 1.0
+
+    prob = cards_win / 51.0
+    if prob == 0:
+        return 1.0
+    mult = (1.0 / prob) * 0.95
+    return round(mult, 2)
+
+def hilo_keyboard(user_id: int, current_card_rank):
+    high_mult = calc_hilo_mult(current_card_rank, "high")
+    low_mult = calc_hilo_mult(current_card_rank, "low")
+    
+    row = []
+    if high_mult > 1.01:
+        row.append(InlineKeyboardButton(text=f"🟢 ⏸️ Выше x{high_mult}", callback_data=f"hilo:{user_id}:high"))
+    if low_mult > 1.01:
+        row.append(InlineKeyboardButton(text=f"🔴 ⏸️ Ниже x{low_mult}", callback_data=f"hilo:{user_id}:low"))
+    
+    kb = []
+    if row: kb.append(row)
+    
+    kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback_data=f"hilocash:{user_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+@router.message(F.text.lower().startswith(("хило", "хл", "hilo")))
+async def cmd_hilo(message: Message):
+    if await check_ban_msg(message):
+        return
+    
+    parts = message.text.lower().replace("хило", "").replace("хл", "").replace("hilo", "").strip().split()
+    
+    if len(parts) == 0:
+        if message.from_user.id in active_hilo:
+            game = active_hilo[message.from_user.id]
+            card_str = get_card_str(game["current_rank"], game["current_suit"])
+            mult = game["multiplier"]
+            win = int(game["bet"] * mult)
+            text = (
+                f"🃏 Выпавшая карта: {card_str}\n"
+                f"💵 Ваша ставка: {fmt_num(game['bet'])} монет\n\n"
+                f"Сделайте выбор, будет ли следующая карта выше или ниже!\n"
+                f"Текущий множитель: <b>{mult:.2f}x</b> | Выигрыш: <b>{fmt_num(win)}</b>"
+            )
+            await message.answer(text, reply_markup=hilo_keyboard(message.from_user.id, game["current_rank"]))
+        else:
+            await message.answer("❌ У тебя нет активной игры. Напиши: <code>хило 100</code>")
+        return
+
+    try:
+        bet = int(parts[0])
+    except ValueError:
+        await message.answer("❌ Ставка должна быть числом. Пример: <code>хило 100</code>")
+        return
+
+    user = await get_user(message.from_user.id)
+    if bet <= 0:
+        await message.answer("❌ Ставка должна быть больше 0.")
+        return
+    if bet > user[1]:
+        await message.answer("❌ Недостаточно средств.")
+        return
+
+    await update_balance(message.from_user.id, -bet)
+
+    rank, suit = draw_card()
+    active_hilo[message.from_user.id] = {
+        "bet": bet,
+        "current_rank": rank,
+        "current_suit": suit,
+        "multiplier": 1.0,
+    }
+
     card_str = get_card_str(rank, suit)
-    await message.answer(
-        f"🃏 <b>Игра Hi-Lo началась!</b>\n"
-        f"Текущая карта: <b>{card_str}</b>\n"
-        f"Ставка: {fmt_num(bet)}\n\n"
-        f"Угадай, будет ли следующая карта <b>Выше</b> или <b>Ниже</b>:",
-        reply_markup=hilo_keyboard(message.from_user.id, rank)
+    text = (
+        f"🃏 Выпавшая карта: {card_str}\n"
+        f"💵 Ваша ставка: {fmt_num(bet)} монет\n\n"
+        f"Сделайте выбор, будет ли следующая карта выше или ниже!"
     )
+    await message.answer(text, reply_markup=hilo_keyboard(message.from_user.id, rank))
 
 @router.callback_query(F.data.startswith("hilo:"))
 async def cb_hilo_guess(callback: CallbackQuery):
@@ -519,23 +619,24 @@ async def cb_hilo_guess(callback: CallbackQuery):
         mult = game["multiplier"]
         win_amount = int(game["bet"] * mult)
         
-        await callback.message.edit_text(
-            f"🎉 <b>Угадал!</b>\n"
-            f"Было: {current_card} -> Стало: {new_card}\n"
+        text = (
+            f"🎉 <b>Угадал!</b>\n\n"
+            f"Было: {current_card} ➡️ Стало: {new_card}\n"
             f"Текущий множитель: <b>{mult:.2f}x</b>\n"
-            f"Потенциальный выигрыш: <b>{fmt_num(win_amount)}</b>\n\n"
-            f"Продолжаем или забираем?",
-            reply_markup=hilo_keyboard(user_id, new_rank)
+            f"Потенциальный выигрыш: <b>{fmt_num(win_amount)}</b> монет\n\n"
+            f"Продолжаем или забираем?"
         )
+        await callback.message.edit_text(text, reply_markup=hilo_keyboard(user_id, new_rank))
     else:
         del active_hilo[user_id]
         await log_game(user_id, "hilo", game["bet"], -game["bet"])
         
-        await callback.message.edit_text(
-            f"💥 <b>Не угадал!</b>\n"
-            f"Было: {current_card} -> Стало: {new_card}\n"
-            f"Ставка {fmt_num(game['bet'])} сгорела."
+        text = (
+            f"💥 <b>Не угадал!</b>\n\n"
+            f"Было: {current_card} ➡️ Стало: {new_card}\n"
+            f"К сожалению, ставка {fmt_num(game['bet'])} монет сгорела."
         )
+        await callback.message.edit_text(text)
     await callback.answer()
 
 @router.callback_query(F.data.startswith("hilocash:"))
