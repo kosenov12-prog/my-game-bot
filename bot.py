@@ -14,13 +14,10 @@ import aiosqlite
 BOT_TOKEN = "9223869999:AAGCCEcj4H7-OWqTFbAffl_PBdHX_fXfLP0"
 ADMIN_ID = 5118497284
 
-# Создаем папку data, если ее нет, и кладем базу туда
 os.makedirs("data", exist_ok=True)
 DB_PATH = "data/game.db"
 
 router = Router()
-
-# ==================== БАЗА ДАННЫХ ====================
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -42,17 +39,6 @@ async def init_db():
                 bet INTEGER,
                 win INTEGER,
                 date TEXT
-            )
-        """)
-        # Таблица для сохранения активных игр в Мины
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS active_mines (
-                user_id INTEGER PRIMARY KEY,
-                bet INTEGER,
-                mines_count INTEGER,
-                mines_positions TEXT,
-                opened TEXT,
-                message_id INTEGER
             )
         """)
         await db.commit()
@@ -106,14 +92,10 @@ async def is_banned(user_id: int):
     user = await get_user(user_id)
     return user[2] == 1
 
-# ==================== СОСТОЯНИЯ ====================
-
 class AdminStates(StatesGroup):
     waiting_give = State()
     waiting_id = State()
     waiting_amount = State()
-
-# ==================== ХЕЛПЕРЫ ====================
 
 def fmt_num(n: int) -> str:
     return f"{n:,}".replace(",", " ")
@@ -123,8 +105,6 @@ async def check_ban_msg(message: Message) -> bool:
         await message.answer("🚫 Вы заблокированы и не можете играть.")
         return True
     return False
-
-# ==================== КОМАНДЫ ====================
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
@@ -136,8 +116,7 @@ async def cmd_start(message: Message):
         "• <b>лб</b> — лидерборд за сегодня\n"
         "• <b>бонус</b> — получить бонус (раз в 10 часов)\n"
         "• <b>мины [ставка] [мин]</b> — минное поле (2-24 мины)\n"
-        "• <b>мины</b> — продолжить предыдущую игру\n"
-        "• <b>кнб [ставка]</b> — камень-ножницы-бумага\n"
+        "• <b>хило [ставка]</b> — игра Hi-Lo\n"
         "• <b>дать [сумма]</b> — ответом на сообщение игрока\n"
     )
     if message.from_user.id == ADMIN_ID:
@@ -202,7 +181,7 @@ async def cmd_bonus(message: Message):
                          (now.isoformat(), message.from_user.id))
         await db.commit()
     await message.answer(f"🎁 <b>Бонус получен!</b>\n💵 +{fmt_num(amount)} монет")
-# ==================== ИГРА: МИНЫ ====================
+    # ==================== ИГРА: МИНЫ ====================
 
 active_mines = {}
 
@@ -218,11 +197,9 @@ def mines_keyboard(user_id: int, opened: set, all_opened_reveal=None):
                 else:
                     line.append(InlineKeyboardButton(text="💎", callback_data="none"))
             else:
-                # Если игра закончена (передан all_opened_reveal), показываем мины
                 if all_opened_reveal and all_opened_reveal[idx] == "mine":
                     line.append(InlineKeyboardButton(text="💥", callback_data="none"))
                 else:
-                    # В остальных случаях показываем закрытую клетку 🔒
                     line.append(InlineKeyboardButton(text="🔒", callback_data=f"mine:{user_id}:{idx}"))
         kb.append(line)
     
@@ -245,7 +222,6 @@ async def cmd_mines(message: Message):
     
     parts = message.text.lower().replace("мины", "").replace("mines", "").strip().split()
     
-    # Если написали просто "мины" - показываем текущую игру
     if len(parts) == 0:
         if message.from_user.id in active_mines:
             game = active_mines[message.from_user.id]
@@ -384,7 +360,6 @@ async def cb_mine_cash(callback: CallbackQuery):
 
     del active_mines[user_id]
 
-    # Показываем ВСЕ клетки: где были мины, где мы открыли, и где остались безопасные
     reveal = {i: ("mine" if i in game["mines"] else "safe") for i in range(25)}
     
     await callback.message.edit_text(
@@ -394,11 +369,10 @@ async def cb_mine_cash(callback: CallbackQuery):
         reply_markup=mines_keyboard(user_id, game["opened"], reveal)
     )
     await callback.answer("💰 Забрано!")
-# ==================== ИГРА: HI-LO (ХАЙ-ЛОУ) ====================
+    # ==================== ИГРА: HI-LO (ХАЙ-ЛОУ) ====================
 
 active_hilo = {}
 
-# Создаем колоду: 2, 3, ..., 10, J(11), Q(12), K(13), A(14)
 SUITS = ["♠️", "♥️", "♦️", "♣️"]
 RANKS = {
     2: "2", 3: "3", 4: "4", 5: "5", 6: "6", 7: "7", 8: "8", 9: "9", 10: "10",
@@ -452,7 +426,6 @@ def hilo_keyboard(user_id: int, current_card_rank):
     kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback_data=f"hilocash:{user_id}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-# Поддержка написания: хило, хл, hilo
 @router.message(F.text.lower().startswith(("хило", "хл", "hilo")))
 async def cmd_hilo(message: Message):
     if await check_ban_msg(message):
@@ -460,7 +433,6 @@ async def cmd_hilo(message: Message):
     
     parts = message.text.lower().replace("хило", "").replace("хл", "").replace("hilo", "").strip().split()
     
-    # Если написали просто команду - показываем текущую игру
     if len(parts) == 0:
         if message.from_user.id in active_hilo:
             game = active_hilo[message.from_user.id]
@@ -593,34 +565,6 @@ async def cb_hilo_cash(callback: CallbackQuery):
         f"Выигрыш: <b>{fmt_num(win)}</b> монет (x{game['multiplier']:.2f})"
     )
     await callback.answer("💰 Забрано!")
-# ==================== ЗАПУСК ====================
-
-async def main():
-    await init_db()
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-    dp = Dispatcher()
-    dp.include_router(router)
-    print("Бот запущен...")
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-
-# ==================== ЗАПУСК ====================
-
-async def main():
-    await init_db()
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-    dp = Dispatcher()
-    dp.include_router(router)
-    print("Бот запущен...")
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-        
     # ==================== ВЫДАЧА МОНЕТ (ДАТЬ) ====================
 
 @router.message(F.text.lower().startswith("дать"))
@@ -682,11 +626,11 @@ async def cmd_transfer(message: Message):
 
 def admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("💰 Начислить (ответом)", callback_data="admin_give_reply")],
-        [InlineKeyboardButton("💰 Начислить (по ID)", callback_data="admin_give_id")],
-        [InlineKeyboardButton("🚫 Бан (ответом)", callback_data="admin_ban_reply")],
-        [InlineKeyboardButton("✅ Разбан (ответом)", callback_data="admin_unban_reply")],
-        [InlineKeyboardButton("👑 Начислить себе 5118497284", callback_data="admin_give_self")],
+        [InlineKeyboardButton(text="💰 Начислить (ответом)", callback_data="admin_give_reply")],
+        [InlineKeyboardButton(text="💰 Начислить (по ID)", callback_data="admin_give_id")],
+        [InlineKeyboardButton(text="🚫 Бан (ответом)", callback_data="admin_ban_reply")],
+        [InlineKeyboardButton(text="✅ Разбан (ответом)", callback_data="admin_unban_reply")],
+        [InlineKeyboardButton(text="👑 Начислить себе 5118497284", callback_data="admin_give_self")],
     ])
 
 @router.message(Command("admin"))
@@ -778,8 +722,7 @@ async def cmd_give(message: Message):
     await get_user(target)
     await update_balance(target, amount)
     await message.answer(f"✅ Начислено {fmt_num(amount)} монет игроку {target}.")
-
-@router.callback_query(F.data == "admin_ban_reply")
+    @router.callback_query(F.data == "admin_ban_reply")
 async def cb_admin_ban_reply(callback: CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Нет доступа.", show_alert=True)
@@ -843,13 +786,8 @@ async def cmd_unban(message: Message):
     await set_banned(target, 0)
     await message.answer(f"✅ Игрок <code>{target}</code> разбанен.")
 
+# ==================== ЗАПУСК ====================
+
 async def main():
     await init_db()
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-    dp = Dispatcher()
-    dp.include_router(router)
-    print("Бот запущен...")
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
