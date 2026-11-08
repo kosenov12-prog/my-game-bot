@@ -722,7 +722,7 @@ async def cmd_give(message: Message):
     await get_user(target)
     await update_balance(target, amount)
     await message.answer(f"✅ Начислено {fmt_num(amount)} монет игроку {target}.")
-@router.callback_query(F.data == "admin_ban_reply")
+    
 async def cb_admin_ban_reply(callback: CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Нет доступа.", show_alert=True)
@@ -730,17 +730,6 @@ async def cb_admin_ban_reply(callback: CallbackQuery):
     await callback.message.edit_text(
         "🚫 <b>Бан</b>\n\nОтветь на сообщение игрока: <code>/ban</code>\n"
         "Также: <code>/ban ID</code>"
-    )
-    await callback.answer()
-
-    @router.callback_query(F.data == "admin_unban_reply")
-async def cb_admin_unban_reply(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Нет доступа.", show_alert=True)
-        return
-    await callback.message.edit_text(
-        "✅ <b>Разбан</b>\n\nОтветь на сообщение игрока: <code>/unban</code>\n"
-        "Также: <code>/unban ID</code>"
     )
     await callback.answer()
 
