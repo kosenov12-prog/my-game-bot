@@ -552,4 +552,109 @@ async def admin_waiting_amount(message: Message, state: FSMContext):
     data = await state.get_data()
     target = data.get("target_id")
     await state.clear()
-    awa
+        await message.answer(f"✅ Начислено {fmt_num(amount)} монет игроку <code>{target}</code>.")
+
+@router.message(Command("give"))
+async def cmd_give(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Доступ запрещён.")
+        return
+    if not message.reply_to_message:
+        await message.answer("❌ Ответь на сообщение игрока командой /give СУММА")
+        return
+    parts = message.text.split()
+    if len(parts) != 2:
+        await message.answer("❌ Формат: /give СУММА (ответом на сообщение)")
+        return
+    try:
+        amount = int(parts[1])
+    except ValueError:
+        await message.answer("❌ Сумма должна быть числом.")
+        return
+    target = message.reply_to_message.from_user.id
+    await get_user(target)
+    await update_balance(target, amount)
+    await message.answer(f"✅ Начислено {fmt_num(amount)} монет игроку {target}.")
+
+
+@router.callback_query(F.data == "admin_ban_reply")
+async def cb_admin_ban_reply(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    await callback.message.edit_text(
+        "🚫 <b>Бан</b>\n\nОтветь на сообщение игрока: <code>/ban</code>\n"
+        "Также: <code>/ban ID</code>"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_unban_reply")
+async def cb_admin_unban_reply(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    await callback.message.edit_text(
+        "✅ <b>Разбан</b>\n\nОтветь на сообщение игрока: <code>/unban</code>\n"
+        "Также: <code>/unban ID</code>"
+    )
+    await callback.answer()
+
+
+@router.message(Command("ban"))
+async def cmd_ban(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    target = None
+    if message.reply_to_message:
+        target = message.reply_to_message.from_user.id
+    else:
+        parts = message.text.split()
+        if len(parts) == 2:
+            try:
+                target = int(parts[1])
+            except ValueError:
+                pass
+    if not target:
+        await message.answer("❌ Ответь на сообщение игрока или укажи ID: /ban ID")
+        return
+    await get_user(target)
+    await set_banned(target, 1)
+    await message.answer(f"🚫 Игрок <code>{target}</code> забанен.")
+
+
+@router.message(Command("unban"))
+async def cmd_unban(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    target = None
+    if message.reply_to_message:
+        target = message.reply_to_message.from_user.id
+    else:
+        parts = message.text.split()
+        if len(parts) == 2:
+            try:
+                target = int(parts[1])
+            except ValueError:
+                pass
+    if not target:
+        await message.answer("❌ Ответь на сообщение игрока или укажи ID: /unban ID")
+        return
+    await get_user(target)
+    await set_banned(target, 0)
+    await message.answer(f"✅ Игрок <code>{target}</code> разбанен.")
+
+
+# ==================== ЗАПУСК ====================
+
+async def main():
+    await init_db()
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+    dp = Dispatcher()
+    dp.include_router(router)  # <--- ТА САМАЯ ВАЖНАЯ СТРОЧКА
+    print("Бот запущен...")
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
