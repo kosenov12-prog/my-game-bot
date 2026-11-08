@@ -130,7 +130,6 @@ async def cmd_balance(message: Message):
         f"💰 <b>Ваш баланс:</b> {fmt_num(user[1])} монет\n"
         f"📊 <b>Заработано сегодня:</b> {fmt_num(user[4])} монет"
     )
-
 @router.message(F.text.lower() == "лб")
 async def cmd_leaderboard(message: Message):
     today = datetime.now().strftime("%Y-%m-%d")
@@ -147,14 +146,19 @@ async def cmd_leaderboard(message: Message):
 
     text = "🏆 <b>Лидерборд за сегодня:</b>\n\n"
     medals = ["🥇", "🥈", "🥉"]
+    
     for i, (uid, won) in enumerate(rows):
         medal = medals[i] if i < 3 else f"{i+1}."
         try:
             chat = await message.bot.get_chat(uid)
-            name = chat.first_name or chat.username or str(uid)
+            name = chat.first_name
+            if chat.username:
+                name += f" (@{chat.username})"
         except Exception:
-            name = str(uid)
+            name = f"Игрок {uid}"
+            
         text += f"{medal} {name} — {fmt_num(won)} монет\n"
+        
     await message.answer(text)
 
 @router.message(F.text.lower() == "бонус")
@@ -527,12 +531,12 @@ def hilo_keyboard(user_id: int, current_card_rank):
     kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback_data=f"hilocash:{user_id}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-@router.message(F.text.lower().startswith(("хило", "хл", "hilo")))
+@router.message(F.text.lower().regexp(r'^(хило|хл|hilo)\s+\d+$'))
 async def cmd_hilo(message: Message):
     if await check_ban_msg(message):
         return
     
-    parts = message.text.lower().replace("хило", "").replace("хл", "").replace("hilo", "").strip().split()
+    parts = message.text.lower().split()[1:]
     
     if len(parts) == 0:
         if message.from_user.id in active_hilo:
