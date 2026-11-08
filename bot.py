@@ -540,18 +540,11 @@ try:
     amount = int(parts[1])
 except ValueError:
     await message.answer("❌ Сумма должна быть числом.")
-    returnо́
+    return
+target = message.reply_to_message.from_user.id
 await get_user(target)
 await update_balance(target, amount)
 await message.answer(f"✅ Начислено {fmt_num(amount)} монет игроку {target}.")
-        amount = int(parts[1])
-    except ValueError:
-        await message.answer("❌ Сумма должна быть числом.")
-        return
-    target = message.reply_to_message.from_user.id
-    await get_user(target)
-    await update_balance(target, amount)
-    await message.answer(f"✅ Начислено {fmt_num(amount)} монет игроку {target}.")
 
 @router.callback_query(F.data == "admin_ban_reply")
 async def cb_admin_ban_reply(callback: CallbackQuery):
