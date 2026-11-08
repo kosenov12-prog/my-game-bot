@@ -527,7 +527,7 @@ def hilo_keyboard(user_id: int, current_card_rank):
     kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback_data=f"hilocash:{user_id}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-@router.message(F.text.lower().startswith(("хило", "хл", "hilo")))
+@router.message(F.text.lower().regexp(r'^(хило|хл|hilo)\s+\d+$'))
 async def cmd_hilo(message: Message):
     if await check_ban_msg(message):
         return
