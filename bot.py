@@ -1,396 +1,554 @@
+import asyncio
 import random
-import os
-from aiogram import Bot, Dispatcher, types, F
+import json
+from datetime import datetime, timedelta
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.client.default import DefaultBotProperties
+import aiosqlite
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 5118497284  # ВАШ ИГРОВОЙ ID
+BOT_TOKEN = "ТВОЙ_ТОКЕН_ЗДЕСЬ"
+ADMIN_ID = 5118497284
+DB_PATH = "game.db"
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+router = Router()
 
-# База данных игроков
-users = {}
-# Состояния игр
-games_state = {}
+# ==================== БАЗА ДАННЫХ ====================
 
-def get_user(user_id, name="Игрок"):
-    if user_id not in users:
-        users[user_id] = {"name": name, "balance": 100, "total_won": 0}
-    return users[user_id]
+async def init_db():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                balance INTEGER DEFAULT 1000,
+                banned INTEGER DEFAULT 0,
+                last_bonus TEXT,
+                daily_won INTEGER DEFAULT 0,
+                daily_date TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS games (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                game TEXT,
+                bet INTEGER,
+                win INTEGER,
+                date TEXT
+            )
+        """)
+        await db.commit()
 
-# --- ГЛАВНОЕ МЕНЮ ---
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    get_user(message.from_user.id, message.from_user.first_name)
-    
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🎁 Бонус", callback_data="menu_bonus")
-    builder.button(text="🏦 Банк (Перевод)", callback_data="menu_bank")
-    builder.button(text="🏆 Лидерборд", callback_data="menu_top")
-    builder.button(text="💰 Мой баланс", callback_data="menu_balance")
-    builder.adjust(2, 2)
-    
+
+async def get_user(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)) as cur:
+            row = await cur.fetchone()
+        if not row:
+            await db.execute(
+                "INSERT INTO users (user_id, balance, banned, last_bonus, daily_won, daily_date) VALUES (?, 1000, 0, NULL, 0, ?)",
+                (user_id, datetime.now().strftime("%Y-%m-%d"))
+            )
+            await db.commit()
+            async with db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)) as cur:
+                row = await cur.fetchone()
+    return row
+
+
+async def update_balance(user_id: int, amount: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+        await db.commit()
+
+
+async def set_balance(user_id: int, amount: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET balance = ? WHERE user_id = ?", (amount, user_id))
+        await db.commit()
+
+
+async def set_banned(user_id: int, banned: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET banned = ? WHERE user_id = ?", (banned, user_id))
+        await db.commit()
+
+
+async def add_daily_win(user_id: int, amount: int):
+    today = datetime.now().strftime("%Y-%m-%d")
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT daily_date FROM users WHERE user_id = ?", (user_id,)) as cur:
+            row = await cur.fetchone()
+        if row[0] != today:
+            await db.execute("UPDATE users SET daily_won = ?, daily_date = ? WHERE user_id = ?", (amount, today, user_id))
+        else:
+            await db.execute("UPDATE users SET daily_won = daily_won + ? WHERE user_id = ?", (amount, user_id))
+        await db.commit()
+
+
+async def log_game(user_id: int, game: str, bet: int, win: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO games (user_id, game, bet, win, date) VALUES (?, ?, ?, ?, ?)",
+            (user_id, game, bet, win, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        )
+        await db.commit()
+
+
+async def is_banned(user_id: int):
+    if user_id == ADMIN_ID:
+        return False
+    user = await get_user(user_id)
+    return user[2] == 1
+
+
+# ==================== СОСТОЯНИЯ ====================
+
+class AdminStates(StatesGroup):
+    waiting_give = State()
+    waiting_id = State()
+    waiting_amount = State()
+
+class BetStates(StatesGroup):
+    waiting_rps_bet = State()
+
+# ==================== ХЕЛПЕРЫ ====================
+
+def fmt_num(n: int) -> str:
+    return f"{n:,}".replace(",", " ")
+
+
+async def check_ban_msg(message: Message) -> bool:
+    if await is_banned(message.from_user.id):
+        await message.answer("🚫 Вы заблокированы и не можете играть.")
+        return True
+    return False
+
+# ==================== КОМАНДЫ ====================
+
+@router.message(Command("start"))
+async def cmd_start(message: Message):
+    await get_user(message.from_user.id)
+    text = (
+        "🎮 <b>Добро пожаловать в игровой бот!</b>\n\n"
+        "📌 Команды:\n"
+        "• <b>б</b> — показать баланс\n"
+        "• <b>лб</b> — лидерборд за сегодня\n"
+        "• <b>бонус</b> — получить бонус (раз в 10 часов)\n"
+        "• <b>мины [ставка] [мин]</b> — минное поле (2-24 мины)\n"
+        "• <b>кнб [ставка]</b> — камень-ножницы-бумага\n"
+    )
+    if message.from_user.id == ADMIN_ID:
+        text += "\n👑 <b>Админ:</b> /admin — админ-панель"
+    await message.answer(text)
+
+
+@router.message(F.text.lower() == "б")
+async def cmd_balance(message: Message):
+    user = await get_user(message.from_user.id)
     await message.answer(
-        f"Привет, {message.from_user.first_name}!\n"
-        f"Твой баланс: {users[message.from_user.id]['balance']} Bin\n\n"
-        f"🎮 **Доступные игры (пиши в чат):**\n"
-        f"├ 💣 `Мины [ставка] [мины]` (Пример: Мины 100 2)\n"
-        f"├ 🪙 `Флип [ставка]`\n"
-        f"├ ♦️ `Хило [ставка]` (Множитель и продолжение)\n"
-        f"└ 💥 `Хотлайн [ставка]`\n\n"
-        f"Напиши **Б**, чтобы узнать баланс.",
-        reply_markup=builder.as_markup(),
-        parse_mode="Markdown"
+        f"💰 <b>Ваш баланс:</b> {fmt_num(user[1])} монет\n"
+        f"📊 <b>Заработано сегодня:</b> {fmt_num(user[4])} монет"
     )
 
-# --- БАЛАНС ПО БУКВЕ Б ---
-@dp.message(F.text.lower() == "б")
-async def show_balance_letter(message: types.Message):
-    user = get_user(message.from_user.id)
-    await message.answer(f"💰 Твой баланс: **{user['balance']} Bin**\n📈 Всего выиграно: {user['total_won']} Bin", parse_mode="Markdown")
 
-# --- БАЗОВЫЕ КНОПКИ ---
-@dp.callback_query(F.data == "menu_balance")
-async def show_balance(callback: types.CallbackQuery):
-    user = get_user(callback.from_user.id)
-    await callback.message.answer(f"💰 Твой баланс: {user['balance']} Bin\n📈 Всего выиграно: {user['total_won']} Bin")
-    await callback.answer()
+@router.message(F.text.lower() == "лб")
+async def cmd_leaderboard(message: Message):
+    today = datetime.now().strftime("%Y-%m-%d")
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT user_id, daily_won FROM users WHERE daily_date = ? AND daily_won > 0 ORDER BY daily_won DESC LIMIT 10",
+            (today,)
+        ) as cur:
+            rows = await cur.fetchall()
 
-@dp.callback_query(F.data == "menu_bonus")
-async def daily_bonus(callback: types.CallbackQuery):
-    user = get_user(callback.from_user.id)
-    bonus = random.randint(50000, 100000) 
-    user['balance'] += bonus
-    await callback.message.answer(f"🎁 Ты получил бонус: {bonus} Bin!\nТвой баланс: {user['balance']} Bin")
-    await callback.answer()
+    if not rows:
+        await message.answer("📊 Сегодня ещё никто не выиграл. Будь первым!")
+        return
 
-@dp.callback_query(F.data == "menu_top")
-async def show_top(callback: types.CallbackQuery):
-    sorted_users = sorted(users.items(), key=lambda item: item[1]['total_won'], reverse=True)
-    text = "🏆 **Лидерборд (Топ игроков):**\n\n"
-    count = 0
-    for uid, data in sorted_users:
-        if data['total_won'] > 0:
-            count += 1
-            text += f"{count}. {data['name']} — {data['total_won']} Bin\n"
-        if count == 10:
-            break
-    if count == 0:
-        text = "Пока никто не играл. Станьте первым!"
-    await callback.message.answer(text, parse_mode="Markdown")
-    await callback.answer()
-
-# --- БАНК (ПЕРЕВОДЫ) ---
-@dp.callback_query(F.data == "menu_bank")
-async def start_transfer(callback: types.CallbackQuery):
-    await callback.message.edit_text("🏦 Введите имя игрока и сумму через пробел.\nПример: `Вася 10000`\n\nМаксимум за раз: 50 000 Bin.", parse_mode="Markdown")
-    games_state[callback.from_user.id] = {"game": "transfer"}
-
-@dp.message(F.text.regexp(r'^.+ \d+$'))
-async def process_transfer(message: types.Message):
-    uid = message.from_user.id
-    if uid in games_state and games_state[uid].get("game") == "transfer":
+    text = "🏆 <b>Лидерборд за сегодня:</b>\n\n"
+    medals = ["🥇", "🥈", "🥉"]
+    for i, (uid, won) in enumerate(rows):
+        medal = medals[i] if i < 3 else f"{i+1}."
         try:
-            name_target, amount_str = message.text.rsplit(' ', 1)
-            amount = int(amount_str)
-            sender = get_user(uid)
-            
-            if amount > 50000:
-                await message.answer("❌ Максимум за один перевод — 50 000 Bin.")
-                return
-            if amount <= 0:
-                await message.answer("❌ Сумма должна быть больше нуля.")
-                return
-            if sender['balance'] < amount:
-                await message.answer("❌ У вас недостаточно средств на балансе.")
-                return
-                
-            found = False
-            for target_uid, target_data in users.items():
-                if target_data['name'].lower() == name_target.lower() and target_uid != uid:
-                    sender['balance'] -= amount
-                    target_data['balance'] += amount
-                    await message.answer(f"✅ Вы перевели {amount} Bin игроку {target_data['name']}.")
-                    found = True
-                    break
-            
-            if not found:
-                await message.answer("❌ Игрок с таким именем не найден (он должен зайти в бота).")
-            
-            del games_state[uid]
+            chat = await message.bot.get_chat(uid)
+            name = chat.first_name or chat.username or str(uid)
         except Exception:
-            await message.answer("Ошибка формата. Введите: Имя Сумма")
+            name = str(uid)
+        text += f"{medal} {name} — {fmt_num(won)} монет\n"
+    await message.answer(text)
 
-# --- АДМИН КОМАНДА (/give) ---
-@dp.message(Command("give"))
-async def admin_give(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ У вас нет прав.")
+
+@router.message(F.text.lower() == "бонус")
+async def cmd_bonus(message: Message):
+    if await check_ban_msg(message):
+        return
+    user = await get_user(message.from_user.id)
+    now = datetime.now()
+
+    if user[3]:
+        last = datetime.fromisoformat(user[3])
+        diff = now - last
+        if diff < timedelta(hours=10):
+            left = timedelta(hours=10) - diff
+            hours = left.seconds // 3600
+            minutes = (left.seconds % 3600) // 60
+            await message.answer(f"⏳ Следующий бонус через <b>{hours}ч {minutes}мин</b>")
+            return
+
+    amount = random.randint(5000, 100000)
+    await update_balance(message.from_user.id, amount)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET last_bonus = ? WHERE user_id = ?",
+                         (now.isoformat(), message.from_user.id))
+        await db.commit()
+    await message.answer(f"🎁 <b>Бонус получен!</b>\n💵 +{fmt_num(amount)} монет")
+
+
+# ==================== ИГРА: МИНЫ ====================
+
+# game_id -> dict с данными игры
+active_mines = {}
+
+def mines_keyboard(game_id: str, opened: set, all_opened_reveal=None):
+    kb = []
+    for row in range(5):
+        line = []
+        for col in range(5):
+            idx = row * 5 + col
+            if idx in opened:
+                if all_opened_reveal and all_opened_reveal[idx] == "mine":
+                    line.append(InlineKeyboardButton("💥", callback_data="none"))
+                else:
+                    line.append(InlineKeyboardButton("💎", callback_data="none"))
+            else:
+                line.append(InlineKeyboardButton("⬜", callback_data=f"mine:{game_id}:{idx}"))
+        kb.append(line)
+    if all_opened_reveal is None:
+        kb.append([InlineKeyboardButton("💰 Забрать выигрыш", callback_data=f"minecash:{game_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+@router.message(F.text.lower().startswith("мины"))
+async def cmd_mines(message: Message):
+    if await check_ban_msg(message):
+        return
+    parts = message.text.split()
+    if len(parts) != 3:
+        await message.answer("❌ Формат: <code>мины [ставка] [мин]</code>\nПример: <code>мины 100 2</code>")
         return
     try:
-        args = message.text.split()
-        target_username = args[1]
-        amount = int(args[2])
-        
-        if amount > 9999999999:
-            await message.answer("❌ Максимум можно выдать 9 999 999 999 Bin.")
-            return
-            
-        found = False
-        for uid, data in users.items():
-            if data['name'].lower() == target_username.lower():
-                data['balance'] += amount
-                await message.answer(f"✅ Админ начислил {amount} Bin игроку {data['name']}.")
-                found = True
-                break
-        if not found:
-            await message.answer("Игрок не найден.")
-    except:
-        await message.answer("Формат: /give Имя 5000")
-
-# --- ИГРА 1: МИНЫ (25 клеток) ---
-@dp.message(F.text.lower().startswith("мины "))
-async def start_mines(message: types.Message):
-    uid = message.from_user.id
-    user = get_user(uid)
-    try:
-        args = message.text.split()
-        bet = int(args[1])
-        mine_count = int(args[2])
-        
-        if bet <= 0 or bet > user['balance']:
-            await message.answer("Недостаточно средств!")
-            return
-        if mine_count < 1 or mine_count > 24:
-            await message.answer("Количество мин должно быть от 1 до 24!")
-            return
-            
-        user['balance'] -= bet
-        mines = random.sample(range(1, 26), mine_count)
-        games_state[uid] = {"game": "mines_play", "bet": bet, "mines": mines, "mine_count": mine_count}
-        
-        builder = InlineKeyboardBuilder()
-        for i in range(1, 26):
-            builder.button(text=str(i), callback_data=f"mines_{i}")
-        builder.adjust(5)
-        
-        await message.answer(f"💣 Ставка {bet} Bin. Мин: {mine_count}.\nВыбери клетку на поле 5х5:", reply_markup=builder.as_markup())
-    except:
-        await message.answer("Формат: Мины [ставка] [мины]\nПример: Мины 100 2")
-
-@dp.callback_query(F.data.startswith("mines_"))
-async def play_mines(callback: types.CallbackQuery):
-    uid = callback.from_user.id
-    if uid not in games_state or games_state[uid].get("game") != "mines_play":
-        await callback.answer("Игра не найдена.")
+        bet = int(parts[1])
+        mines_count = int(parts[2])
+    except ValueError:
+        await message.answer("❌ Ставка и количество мин должны быть числами.")
         return
-        
-    choice = int(callback.data.split("_")[1])
-    state = games_state[uid]
-    user = get_user(uid)
-    
-    if choice in state['mines']:
-        await callback.message.edit_text(f"💥 БУМ! Ты попал на мину ({choice}). Потеряно {state['bet']} Bin.\nБаланс: {user['balance']}")
-    else:
-        win = state['bet'] * 2
-        user['balance'] += win
-        user['total_won'] += state['bet']
-        await callback.message.edit_text(f"✅ Фух! Мины были на {state['mines']}.\nТы выиграл {win} Bin!\nБаланс: {user['balance']}")
-        
-    del games_state[uid]
 
-# --- ИГРА 2: ФЛИП (Орел/Решка) ---
-@dp.message(F.text.lower().startswith("флип "))
-async def start_flip(message: types.Message):
-    uid = message.from_user.id
-    user = get_user(uid)
-    try:
-        bet = int(message.text.split()[1])
-        if bet <= 0 or bet > user['balance']:
-            await message.answer("Недостаточно средств!")
-            return
-            
-        user['balance'] -= bet
-        games_state[uid] = {"game": "flip_play", "bet": bet}
-        
-        builder = InlineKeyboardBuilder()
-        builder.button(text="🦅 Орел", callback_data="flip_heads")
-        builder.button(text="🪙 Решка", callback_data="flip_tails")
-        
-        await message.answer(f"🪙 Ставка {bet} Bin. На что ставишь?", reply_markup=builder.as_markup())
-    except:
-        await message.answer("Формат: Флип [ставка]\nПример: Флип 100")
-
-@dp.callback_query(F.data.startswith("flip_"))
-async def play_flip(callback: types.CallbackQuery):
-    uid = callback.from_user.id
-    if uid not in games_state or games_state[uid].get("game") != "flip_play":
-        await callback.answer("Игра не найдена.")
+    if mines_count < 2 or mines_count > 24:
+        await message.answer("❌ Количество мин должно быть от 2 до 24.")
         return
-        
-    choice = callback.data.split("_")[1]
-    state = games_state[uid]
-    user = get_user(uid)
-    
-    result = random.choice(["heads", "tails"])
-    result_ru = "Орел 🦅" if result == "heads" else "Решка 🪙"
-    
-    if choice == result:
-        win = state['bet'] * 2
-        user['balance'] += win
-        user['total_won'] += state['bet']
-        await callback.message.edit_text(f"Выпало: {result_ru}\n🎉 Ты угадал! Выигрыш: {win} Bin.\nБаланс: {user['balance']}")
-    else:
-        await callback.message.edit_text(f"Выпало: {result_ru}\n❌ Не угадал. Потеряно: {state['bet']} Bin.\nБаланс: {user['balance']}")
-        
-    del games_state[uid]
 
-# --- ИГРА 3: ХИЛО (Обновленная версия с множителем) ---
-@dp.message(F.text.lower().startswith("хило "))
-async def start_hilo(message: types.Message):
-    uid = message.from_user.id
-    user = get_user(uid)
-    try:
-        bet = int(message.text.split()[1])
-        if bet <= 0 or bet > user['balance']:
-            await message.answer("Недостаточно средств!")
-            return
-            
-        user['balance'] -= bet
-        card = random.randint(2, 14)
-        # multiplier - текущий множитель выигрыша
-        games_state[uid] = {"game": "hilo_play", "bet": bet, "card": card, "multiplier": 1.0}
-        
-        await send_hilo_menu(uid, message.chat.id, is_new=True)
-    except Exception as e:
-        await message.answer("Формат: Хило [ставка]\nПример: Хило 100")
-
-async def send_hilo_menu(uid, chat_id, is_new=False):
-    state = games_state[uid]
-    card = state['card']
-    mult = state['multiplier']
-    
-    builder = InlineKeyboardBuilder()
-    builder.button(text="⬆️ Больше", callback_data="hilo_more")
-    builder.button(text="⬇️ Меньше", callback_data="hilo_less")
-    
-    if mult > 1.0:
-        # Если есть накопленный выигрыш, даем кнопку забрать
-        win_amount = int(state['bet'] * mult)
-        builder.button(text=f"💰 Забрать {win_amount} Bin", callback_data="hilo_cashout")
-        builder.adjust(2, 1)
-        text = f"♦️ Текущая карта: {get_card_name(card)}\nТекущий множитель: **x{mult:.1f}** (Выигрыш: {win_amount} Bin)\n\nСледующая карта будет больше или меньше?"
-    else:
-        builder.adjust(2)
-        text = f"♦️ Ставка {state['bet']} Bin.\nТекущая карта: {get_card_name(card)}\n\nСледующая карта будет больше или меньше?"
-        
-    if is_new:
-        await bot.send_message(chat_id, text, reply_markup=builder.as_markup(), parse_mode="Markdown")
-    else:
-        await bot.edit_message_text(text=text, chat_id=chat_id, message_id=state['msg_id'], reply_markup=builder.as_markup(), parse_mode="Markdown")
-
-@dp.callback_query(F.data.startswith("hilo_"))
-async def play_hilo(callback: types.CallbackQuery):
-    uid = callback.from_user.id
-    if uid not in games_state or games_state[uid].get("game") != "hilo_play":
-        await callback.answer("Игра не найдена.")
+    user = await get_user(message.from_user.id)
+    if bet <= 0:
+        await message.answer("❌ Ставка должна быть больше 0.")
         return
-        
-    state = games_state[uid]
-    user = get_user(uid)
-    choice = callback.data.split("_")[1]
-    
-    if choice == "cashout":
-        # Забираем деньги
-        win_amount = int(state['bet'] * state['multiplier'])
-        user['balance'] += win_amount
-        user['total_won'] += (win_amount - state['bet'])
-        await callback.message.edit_text(f"💰 Ты забрал **{win_amount} Bin**!\nТвой баланс: {user['balance']} Bin", parse_mode="Markdown")
-        del games_state[uid]
-        await callback.answer()
+    if bet > user[1]:
+        await message.answer("❌ Недостаточно средств.")
         return
-        
-    # Генерируем следующую карту
-    next_card = random.randint(2, 14)
-    while next_card == state['card']:
-        next_card = random.randint(2, 14)
-        
-    win = False
-    if choice == "more" and next_card > state['card']: win = True
-    if choice == "less" and next_card < state['card']: win = True
-    
-    if win:
-        # Увеличиваем множитель (например, на 0.5 за каждый шаг)
-        state['multiplier'] += 0.5
-        state['card'] = next_card
-        state['msg_id'] = callback.message.message_id
-        
-        await send_hilo_menu(uid, callback.message.chat.id)
-        await callback.answer("Угадал! Множитель повышен.")
-    else:
+
+    # Списание ставки
+    await update_balance(message.from_user.id, -bet)
+
+    # Генерация поля
+    positions = list(range(25))
+    random.shuffle(positions)
+    mines_positions = set(positions[:mines_count])
+
+    game_id = f"{message.from_user.id}_{int(datetime.now().timestamp() * 1000)}"
+    active_mines[game_id] = {
+        "user_id": message.from_user.id,
+        "bet": bet,
+        "mines": mines_positions,
+        "opened": set(),
+        "mines_count": mines_count,
+        "multiplier": 1.0,
+    }
+
+    # Расчёт множителя
+    def calc_multiplier(opened_count, mines_count):
+        # множитель = (25 / (25 - mines))^opened, с небольшим house edge
+        if opened_count == 0:
+            return 1.0
+        m = 1.0
+        for i in range(opened_count):
+            m *= (25 - i) / (25 - mines_count - i)
+        return m * 0.95  # house edge 5%
+
+    active_mines[game_id]["calc"] = calc_multiplier
+
+    await message.answer(
+        f"💣 <b>Минное поле</b>\n"
+        f"Ставка: {fmt_num(bet)} | Мин: {mines_count}\n"
+        f"Открывай клетки. Чем больше открыл — тем больше выигрыш!\n"
+        f"Множитель: <b>1.00x</b> | Выигрыш: <b>0</b>",
+        reply_markup=mines_keyboard(game_id, set())
+    )
+
+
+@router.callback_query(F.data.startswith("mine:"))
+async def cb_mine_open(callback: CallbackQuery):
+    _, game_id, idx_str = callback.data.split(":")
+    idx = int(idx_str)
+    game = active_mines.get(game_id)
+    if not game:
+        await callback.answer("Игра не найдена.", show_alert=True)
+        return
+    if game["user_id"] != callback.from_user.id:
+        await callback.answer("Это не твоя игра.", show_alert=True)
+        return
+    if idx in game["opened"]:
+        await callback.answer("Уже открыто.")
+        return
+
+    if idx in game["mines"]:
+        # Проигрыш
+        reveal = {i: ("mine" if i in game["mines"] else "safe") for i in range(25)}
+        for i in game["opened"]:
+            reveal[i] = "safe"
+        del active_mines[game_id]
+        await log_game(callback.from_user.id, "mines", game["bet"], -game["bet"])
         await callback.message.edit_text(
-            f"Была: {get_card_name(state['card'])}\nСтала: {get_card_name(next_card)}\n\n"
-            f"❌ Не угадал. Потеряно: {state['bet']} Bin.\nБаланс: {user['balance']}"
+            f"💥 <b>БУМ! Ты наткнулся на мину.</b>\n"
+            f"Потеряно: {fmt_num(game['bet'])} монет",
+            reply_markup=mines_keyboard(game_id, game["opened"] | {idx}, reveal)
         )
-        del games_state[uid]
-        await callback.answer("Не угадал.")
-
-# --- ИГРА 4: ХОТЛАЙН (Рискнуть всем) ---
-@dp.message(F.text.lower().startswith("хотлайн "))
-async def start_hotline(message: types.Message):
-    uid = message.from_user.id
-    user = get_user(uid)
-    try:
-        bet = int(message.text.split()[1])
-        if bet <= 0 or bet > user['balance']:
-            await message.answer("Недостаточно средств!")
-            return
-            
-        user['balance'] -= bet
-        games_state[uid] = {"game": "hotline_play", "bet": bet}
-        
-        builder = InlineKeyboardBuilder()
-        builder.button(text="🔥 Рискнуть (x2)", callback_data="hotline_risk")
-        
-        await message.answer(f"💥 Ставка {bet} Bin принята.\nНажми кнопку, чтобы испытать удачу!", reply_markup=builder.as_markup())
-    except:
-        await message.answer("Формат: Хотлайн [ставка]\nПример: Хотлайн 100")
-
-@dp.callback_query(F.data == "hotline_risk")
-async def play_hotline(callback: types.CallbackQuery):
-    uid = callback.from_user.id
-    if uid not in games_state or games_state[uid].get("game") != "hotline_play":
-        await callback.answer("Игра не найдена.")
+        await callback.answer("💥 Мина!")
         return
-        
-    state = games_state[uid]
-    user = get_user(uid)
-    
-    if random.random() < 0.45:
-        win = state['bet'] * 2
-        user['balance'] += win
-        user['total_won'] += state['bet']
-        await callback.message.edit_text(f"🔥 Тебе повезло! Выигрыш: {win} Bin.\nБаланс: {user['balance']}")
+
+    game["opened"].add(idx)
+    opened_count = len(game["opened"])
+    mult = game["calc"](opened_count, game["mines_count"])
+    game["multiplier"] = mult
+    win = int(game["bet"] * mult)
+
+    # Если открыты все безопасные клетки — авто-победа
+    safe_total = 25 - game["mines_count"]
+    if opened_count >= safe_total:
+        await update_balance(callback.from_user.id, win)
+        await add_daily_win(callback.from_user.id, win - game["bet"])
+        await log_game(callback.from_user.id, "mines", game["bet"], win - game["bet"])
+        reveal = {i: ("mine" if i in game["mines"] else "safe") for i in range(25)}
+        del active_mines[game_id]
+        await callback.message.edit_text(
+            f"🎉 <b>ПОБЕДА! Все клетки открыты!</b>\n"
+            f"Выигрыш: <b>{fmt_num(win)}</b> монет (x{mult:.2f})",
+            reply_markup=mines_keyboard(game_id, game["opened"], reveal)
+        )
+        await callback.answer("🎉 Победа!")
+        return
+
+    await callback.message.edit_text(
+        f"💣 <b>Минное поле</b>\n"
+        f"Ставка: {fmt_num(game['bet'])} | Мин: {game['mines_count']}\n"
+        f"Открыто: {opened_count}/{safe_total}\n"
+        f"Множитель: <b>{mult:.2f}x</b> | Выигрыш: <b>{fmt_num(win)}</b>",
+        reply_markup=mines_keyboard(game_id, game["opened"])
+    )
+    await callback.answer(f"💎 Безопасно! x{mult:.2f}")
+
+
+@router.callback_query(F.data.startswith("minecash:"))
+async def cb_mine_cash(callback: CallbackQuery):
+    game_id = callback.data.split(":")[1]
+    game = active_mines.get(game_id)
+    if not game:
+        await callback.answer("Игра не найдена.", show_alert=True)
+        return
+    if game["user_id"] != callback.from_user.id:
+        await callback.answer("Это не твоя игра.", show_alert=True)
+        return
+    if not game["opened"]:
+        await callback.answer("Сначала открой хотя бы одну клетку!", show_alert=True)
+        return
+
+    win = int(game["bet"] * game["multiplier"])
+    await update_balance(callback.from_user.id, win)
+    await add_daily_win(callback.from_user.id, win - game["bet"])
+    await log_game(callback.from_user.id, "mines", game["bet"], win - game["bet"])
+
+    reveal = {i: ("mine" if i in game["mines"] else "safe") for i in range(25)}
+    del active_mines[game_id]
+
+    await callback.message.edit_text(
+        f"💰 <b>Выигрыш забран!</b>\n"
+        f"Выигрыш: <b>{fmt_num(win)}</b> монет (x{game['multiplier']:.2f})",
+        reply_markup=mines_keyboard(game_id, game["opened"], reveal)
+    )
+    await callback.answer("💰 Забрано!")
+
+
+# ==================== ИГРА: КНБ ====================
+
+@router.message(F.text.lower().startswith("кнб"))
+async def cmd_rps(message: Message):
+    if await check_ban_msg(message):
+        return
+    parts = message.text.split()
+    if len(parts) != 2:
+        await message.answer("❌ Формат: <code>кнб [ставка]</code>\nПример: <code>кнб 100</code>")
+        return
+    try:
+        bet = int(parts[1])
+    except ValueError:
+        await message.answer("❌ Ставка должна быть числом.")
+        return
+
+    user = await get_user(message.from_user.id)
+    if bet <= 0:
+        await message.answer("❌ Ставка должна быть больше 0.")
+        return
+    if bet > user[1]:
+        await message.answer("❌ Недостаточно средств.")
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton("🪨 Камень", callback_data=f"rps:{bet}:rock"),
+        InlineKeyboardButton("✂️ Ножницы", callback_data=f"rps:{bet}:scissors"),
+        InlineKeyboardButton("📄 Бумага", callback_data=f"rps:{bet}:paper"),
+    ]])
+    await message.answer(f"🎮 Выбери свой ход (ставка {fmt_num(bet)}):", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("rps:"))
+async def cb_rps(callback: CallbackQuery):
+    _, bet_str, player_choice = callback.data.split(":")
+    bet = int(bet_str)
+
+    user = await get_user(callback.from_user.id)
+    if user[1] < bet:
+        await callback.answer("❌ Недостаточно средств.", show_alert=True)
+        return
+
+    await update_balance(callback.from_user.id, -bet)
+
+    bot_choice = random.choice(["rock", "scissors", "paper"])
+    emoji = {"rock": "🪨", "scissors": "✂️", "paper": "📄"}
+    names = {"rock": "Камень", "scissors": "Ножницы", "paper": "Бумага"}
+
+    if player_choice == bot_choice:
+        result = "draw"
+        delta = 0
+    elif (player_choice == "rock" and bot_choice == "scissors") or \
+         (player_choice == "scissors" and bot_choice == "paper") or \
+         (player_choice == "paper" and bot_choice == "rock"):
+        result = "win"
+        delta = bet
     else:
-        await callback.message.edit_text(f"💥 Не повезло... Потеряно: {state['bet']} Bin.\nБаланс: {user['balance']}")
-        
-    del games_state[uid]
+        result = "lose"
+        delta = -bet
 
-# Вспомогательная функция карт
-def get_card_name(card):
-    if card == 11: return "Валет (11)"
-    if card == 12: return "Дама (12)"
-    if card == 13: return "Король (13)"
-    if card == 14: return "Туз (14)"
-    return str(card)
+    if result == "win":
+        await update_balance(callback.from_user.id, bet * 2)
+        await add_daily_win(callback.from_user.id, bet)
+        await log_game(callback.from_user.id, "rps", bet, bet)
+        text_result = f"🎉 <b>Победа!</b> +{fmt_num(bet)} монет"
+    elif result == "lose":
+        await log_game(callback.from_user.id, "rps", bet, -bet)
+        text_result = f"😢 <b>Проигрыш.</b> -{fmt_num(bet)} монет"
+    else:
+        await update_balance(callback.from_user.id, bet)  # возврат ставки
+        await log_game(callback.from_user.id, "rps", bet, 0)
+        text_result = "🤝 <b>Ничья.</b> Ставка возвращена."
 
-# Обработка прочего текста
-@dp.message()
-async def catch_all(message: types.Message):
-    await message.answer("Напиши /start для выхода в главное меню.")
+    await callback.message.edit_text(
+        f"{emoji[player_choice]} Ты: <b>{names[player_choice]}</b>\n"
+        f"{emoji[bot_choice]} Бот: <b>{names[bot_choice]}</b>\n\n"
+        f"{text_result}"
+    )
+    await callback.answer()
 
-if __name__ == "__main__":
-    print("Бот запущен!")
-    dp.run_polling(bot)
+
+# ==================== АДМИН ПАНЕЛЬ ====================
+
+def admin_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton("💰 Начислить (ответом)", callback_data="admin_give_reply")],
+        [InlineKeyboardButton("💰 Начислить (по ID)", callback_data="admin_give_id")],
+        [InlineKeyboardButton("🚫 Бан (ответом)", callback_data="admin_ban_reply")],
+        [InlineKeyboardButton("✅ Разбан (ответом)", callback_data="admin_unban_reply")],
+        [InlineKeyboardButton("👑 Начислить себе 5118497284", callback_data="admin_give_self")],
+    ])
+
+
+@router.message(Command("admin"))
+async def cmd_admin(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Доступ запрещён.")
+        return
+    await message.answer("👑 <b>Админ-панель</b>\nВыбери действие:", reply_markup=admin_kb())
+
+
+@router.callback_query(F.data == "admin_give_self")
+async def cb_admin_give_self(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    await state.set_state(AdminStates.waiting_amount)
+    await state.update_data(target_id=ADMIN_ID)
+    await callback.message.edit_text("💰 Введите сумму для начисления себе (5118497284):")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_give_reply")
+async def cb_admin_give_reply(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    await state.set_state(AdminStates.waiting_give)
+    await callback.message.edit_text(
+        "💰 <b>Начисление (ответом)</b>\n\n"
+        "Ответь командой на сообщение игрока: <code>/give 500</code>\n"
+        "Где 500 — сумма."
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_give_id")
+async def cb_admin_give_id(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    await state.set_state(AdminStates.waiting_id)
+    await callback.message.edit_text("💰 Введите ID игрока:")
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_id)
+async def admin_waiting_id(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        target = int(message.text.strip())
+    except ValueError:
+        await message.answer("❌ Некорректный ID.")
+        return
+    await state.update_data(target_id=target)
+    await state.set_state(AdminStates.waiting_amount)
+    await message.answer(f"💰 Введите сумму для начисления игроку <code>{target}</code>:")
+
+
+@router.message(AdminStates.waiting_amount)
+async def admin_waiting_amount(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        amount = int(message.text.strip())
+    except ValueError:
+        await message.answer("❌ Некорректная сумма.")
+        return
+    data = await state.get_data()
+    target = data.get("target_id")
+    await state.clear()
+    awa
