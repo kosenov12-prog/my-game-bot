@@ -194,7 +194,7 @@ async def cmd_bonus(message: Message):
                          (now.isoformat(), message.from_user.id))
         await db.commit()
     await message.answer(f"🎁 <b>Бонус получен!</b>\n💵 +{fmt_num(amount)} монет")
-    # ==================== ИГРА: МИНЫ ====================
+# ==================== ИГРА: МИНЫ ====================
 
 active_mines = {}
 
@@ -216,23 +216,28 @@ def mines_keyboard(game_id: str, opened: set, all_opened_reveal=None):
         kb.append([InlineKeyboardButton("💰 Забрать выигрыш", callback_data=f"minecash:{game_id}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-@router.message(F.text.lower().startswith("мины"))
+@router.message(F.text.lower().startswith(("мины", "мин ", "минное")))
 async def cmd_mines(message: Message):
     if await check_ban_msg(message):
         return
-    parts = message.text.split()
-    if len(parts) != 3:
+    
+    # Очищаем команду от лишних слов, чтобы найти ставку и количество мин
+    text = message.text.lower().replace("минное поле", "").replace("мины", "").replace("мин", "").strip()
+    parts = text.split()
+    
+    if len(parts) != 2:
         await message.answer("❌ Формат: <code>мины [ставка] [мин]</code>\nПример: <code>мины 100 2</code>")
         return
+        
     try:
-        bet = int(parts[1])
-        mines_count = int(parts[2])
+        bet = int(parts[0])
+        mines_count = int(parts[1])
     except ValueError:
         await message.answer("❌ Ставка и количество мин должны быть числами.")
         return
 
-    if mines_count < 2 or mines_count > 24:
-        await message.answer("❌ Количество мин должно быть от 2 до 24.")
+    if mines_count < 1 or mines_count > 24:
+        await message.answer("❌ Количество мин должно быть от 1 до 24.")
         return
 
     user = await get_user(message.from_user.id)
@@ -262,10 +267,12 @@ async def cmd_mines(message: Message):
     def calc_multiplier(opened_count, mines_count):
         if opened_count == 0:
             return 1.0
-        m = 1.0
+        # Формула из статьи: 0.97 / вероятность пройти opened_count выборов подряд
+        # Вероятность = (25 - mines) / 25 * (24 - mines) / 24 * ...
+        prob = 1.0
         for i in range(opened_count):
-            m *= (25 - i) / (25 - mines_count - i)
-        return m * 0.95
+            prob *= (25 - mines_count - i) / (25 - i)
+        return round(0.97 / prob, 2)
 
     active_mines[game_id]["calc"] = calc_multiplier
 
