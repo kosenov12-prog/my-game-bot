@@ -398,33 +398,36 @@ def get_card_str(rank, suit):
 
 def calc_hilo_mult(current_rank, guess):
     if guess == "high":
+        # Если карта 14 (Туз), выше ничего нет, шанс только на "равно"
         higher_ranks = 14 - current_rank
         cards_win = higher_ranks * 4
-        # Добавляем шанс ничьей (3 карты из 51), чтобы множитель был честным
-        prob = (cards_win + 3) / 51.0 
-        if prob == 0: return 1.0
-        return round((1.0 / prob) * 0.95, 2)
+        prob = (cards_win + 3) / 51.0  # +3 карты для "равно"
     elif guess == "low":
+        # Если карта 2 (Двойка), ниже ничего нет, шанс только на "равно"
         lower_ranks = current_rank - 2
         cards_win = lower_ranks * 4
-        prob = (cards_win + 3) / 51.0
-        if prob == 0: return 1.0
-        return round((1.0 / prob) * 0.95, 2)
-    return 1.0
+        prob = (cards_win + 3) / 51.0  # +3 карты для "равно"
+    else:
+        prob = 0
+    
+    if prob <= 0: 
+        return 1.0
+    return round((1.0 / prob) * 0.95, 2)
 
 def hilo_keyboard(user_id: int, current_card_rank, current_mult=1.0):
     high_mult = calc_hilo_mult(current_card_rank, "high")
     low_mult = calc_hilo_mult(current_card_rank, "low")
     
     row = []
-    if high_mult > 1.01:
-        row.append(InlineKeyboardButton(text=f"⬆️ Выше или = ({high_mult}x)", callback_data=f"hilo:{user_id}:high"))
-    if low_mult > 1.01:
-        row.append(InlineKeyboardButton(text=f"⬇️ Ниже или = ({low_mult}x)", callback_data=f"hilo:{user_id}:low"))
+    # Кнопка "Выше или =" есть всегда, даже для Короля и Туза
+    row.append(InlineKeyboardButton(text=f"⬆️ Выше или = ({high_mult}x)", callback_data=f"hilo:{user_id}:high"))
     
-    kb = []
-    if row: kb.append(row)
+    # Кнопка "Ниже или =" есть всегда, даже для Двойки
+    row.append(InlineKeyboardButton(text=f"⬇️ Ниже или = ({low_mult}x)", callback_data=f"hilo:{user_id}:low"))
     
+    kb = [row]
+    
+    # Кнопка забрать, если есть что забирать (множитель > 1)
     if current_mult > 1.0:
         kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback_data=f"hilocash:{user_id}")])
         
@@ -509,17 +512,16 @@ async def cb_hilo_guess(callback: CallbackQuery):
     new_rank, new_suit = draw_card()
     new_card = get_card_str(new_rank, new_suit)
     
-    # ЛОГИКА: Выше/Равно или Ниже/Равно
+    # ЛОГИКА ВЫИГРЫША: Выше или Равно / Ниже или Равно
+    win = False
     if guess == "high" and new_rank >= current_rank:
         win = True
     elif guess == "low" and new_rank <= current_rank:
         win = True
-    else:
-        win = False
     
     if win:
-        # Если выпало РАВНО, даем бонус к множителю (например, x1.5 от текущего шага)
         if new_rank == current_rank:
+            # Если выпало то же самое, даем бонус x1.5 к текущему шагу
             game["multiplier"] = round(game["multiplier"] * (step_mult * 1.5), 2)
             msg_prefix = "😮 <b>Выпало то же число! Но ты в игре.</b>\n\n"
         else:
@@ -551,6 +553,37 @@ async def cb_hilo_guess(callback: CallbackQuery):
         )
         await callback.message.edit_text(text)
     await callback.answer()
+
+@router.callback_query(F.data.startswith("hilocash:"))
+async def cb_hilo_cash(callback: CallbackQuery):
+    user_id = int(callback.data.split(":")[1])
+    
+    if user_id != callback.from_user.id:
+        await callback.answer("Это не твоя игра.", show_alert=True)
+        return
+
+    game = active_hilo.get(user_id)
+    if not game:
+        await callback.answer("Игра не найдена.")
+        return
+
+    win = int(game["bet"] * game["multiplier"])
+
+    if win > game["bet"]:
+        await update_balance(user_id, win)
+        await add_daily_win(user_id, win - game["bet"])
+        await log_game(user_id, "hilo", game["bet"], win)
+
+    del active_hilo[user_id]
+
+    await callback.message.edit_text(
+        f"💰 <b>Выигрыш забран!</b>\n"
+        f"Выигрыш: <b>{fmt_num(win)}</b> монет"
+    )
+    await callback.answer("💰 Забрано!")
+
+ 
+            
    # ==================== ВЫДАЧА МОНЕТ (ДАТЬ) ====================
 
 @router.message(F.text.lower().startswith("дать"))
