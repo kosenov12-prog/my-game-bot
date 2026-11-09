@@ -561,7 +561,7 @@ async def cb_hilo_cash(callback: CallbackQuery):
         await callback.answer("Это не твоя игра.", show_alert=True)
         return
 
-     game = active_hilo.get(user_id)
+game = active_hilo.get(user_id)
 if not game:
     await callback.answer("Игра не найдена.")
     return
