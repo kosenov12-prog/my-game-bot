@@ -521,7 +521,7 @@ def calc_hilo_mult(current_rank, guess):
     mult = (1.0 / prob) * 0.95
     return round(mult, 2)
 
-def hilo_keyboard(user_id: int, current_card_rank):
+def hilo_keyboard(user_id: int, current_card_rank: int, current_mult: float = 1.0):
     high_mult = calc_hilo_mult(current_card_rank, "high")
     low_mult = calc_hilo_mult(current_card_rank, "low")
     
@@ -534,10 +534,11 @@ def hilo_keyboard(user_id: int, current_card_rank):
     kb = []
     if row: kb.append(row)
     
+    if current_mult > 1.0:
     kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback_data=f"hilocash:{user_id}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-@router.message(F.text.lower().regexp(r'^(хило|хл|hilo)\s+\d+$'))
+@router.message(F.text.lower().startswith("х"))
 async def cmd_hilo(message: Message):
     if await check_ban_msg(message):
         return
