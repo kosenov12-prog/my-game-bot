@@ -455,6 +455,7 @@ async def cmd_hilo(message: Message):
                 f"Ставка: {fmt_num(game['bet'])} | Множитель: <b>{mult:.2f}x</b>\n"
                 f"Потенциальный выигрыш: <b>{fmt_num(win)}</b>",
                 reply_markup=hilo_keyboard(message.from_user.id, game["current_rank"], game["multiplier"])
+            )
         else:
             await message.answer("❌ У тебя нет активной игры. Напиши: <code>хило 100</code>")
         return
