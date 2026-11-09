@@ -495,7 +495,62 @@ async def cmd_hilo(message: Message):
         f"Угадай, будет ли следующая карта <b>Выше</b> или <b>Ниже</b>:"
     )
     await message.answer(text, reply_markup=hilo_keyboard(message.from_user.id, rank, 1.0))
+
+@router.callback_query(F.data.startswith("hilo:"))
+async def cb_hilo_guess(callback: CallbackQuery):
+    _, user_id_str, guess = callback.data.split(":")
+    user_id = int(user_id_str)
     
+    if user_id != callback.from_user.id:
+        await callback.answer("Это не твоя игра.", show_alert=True)
+        return
+
+    game = active_hilo.get(user_id)
+    if not game:
+        await callback.answer("Игра не найдена.", show_alert=True)
+        return
+
+    current_rank = game["current_rank"]
+    current_card = get_card_str(current_rank, game["current_suit"])
+    
+    step_mult = calc_hilo_mult(current_rank, guess)
+    
+    new_rank, new_suit = draw_card()
+    new_card = get_card_str(new_rank, new_suit)
+    
+    win = False
+    if guess == "high" and new_rank > current_rank:
+        win = True
+    elif guess == "low" and new_rank < current_rank:
+        win = True
+    
+    if win:
+        game["multiplier"] = round(game["multiplier"] * step_mult, 2)
+        game["current_rank"] = new_rank
+        game["current_suit"] = new_suit
+        
+        mult = game["multiplier"]
+        win_amount = int(game["bet"] * mult)
+        
+        text = (
+            f"🎉 <b>Угадал!</b>\n\n"
+            f"Было: {current_card} ➡️ Стало: {new_card}\n"
+            f"Текущий множитель: <b>{mult:.2f}x</b>\n"
+            f"Потенциальный выигрыш: <b>{fmt_num(win_amount)}</b> монет\n\n"
+            f"Продолжаем или забираем?"
+        )
+        await callback.message.edit_text(text, reply_markup=hilo_keyboard(user_id, new_rank, game["multiplier"]))
+    else:
+        del active_hilo[user_id]
+        await log_game(user_id, "hilo", game["bet"], -game["bet"])
+        
+        text = (
+            f"💥 <b>Не угадал!</b>\n\n"
+            f"Было: {current_card} ➡️ Стало: {new_card}\n"
+            f"К сожалению, ставка {fmt_num(game['bet'])} монет сгорела."
+        )
+        await callback.message.edit_text(text)
+    await callback.answer()
     # ==================== ВЫДАЧА МОНЕТ (ДАТЬ) ====================
 
 @router.message(F.text.lower().startswith("дать"))
