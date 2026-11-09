@@ -535,7 +535,7 @@ def hilo_keyboard(user_id: int, current_card_rank: int, current_mult: float = 1.
     if row: kb.append(row)
     
     if current_mult > 1.0:
-    kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback_data=f"hilocash:{user_id}")])
+        kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback_data=f"hilocash:{user_id}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 @router.message(F.text.lower().startswith("х"))
@@ -557,7 +557,7 @@ async def cmd_hilo(message: Message):
                 f"Сделайте выбор, будет ли следующая карта выше или ниже!\n"
                 f"Текущий множитель: <b>{mult:.2f}x</b> | Выигрыш: <b>{fmt_num(win)}</b>"
             )
-            await message.answer(text, reply_markup=hilo_keyboard(message.from_user.id, game["current_rank"]))
+            await message.answer(text, reply_markup=hilo_keyboard(message.from_user.id, rank, 1.0))
         else:
             await message.answer("❌ У тебя нет активной игры. Напиши: <code>хило 100</code>")
         return
@@ -592,7 +592,7 @@ async def cmd_hilo(message: Message):
         f"💵 Ваша ставка: {fmt_num(bet)} монет\n\n"
         f"Сделайте выбор, будет ли следующая карта выше или ниже!"
     )
-    await message.answer(text, reply_markup=hilo_keyboard(message.from_user.id, rank))
+    await message.answer(text, reply_markup=hilo_keyboard(message.from_user.id, rank, 1.0))
 
 @router.callback_query(F.data.startswith("hilo:"))
 async def cb_hilo_guess(callback: CallbackQuery):
@@ -637,7 +637,7 @@ async def cb_hilo_guess(callback: CallbackQuery):
             f"Потенциальный выигрыш: <b>{fmt_num(win_amount)}</b> монет\n\n"
             f"Продолжаем или забираем?"
         )
-        await callback.message.edit_text(text, reply_markup=hilo_keyboard(user_id, new_rank))
+        await callback.message.edit_text(text, reply_markup=hilo_keyboard(user_id, new_rank, game["multiplier"]))
     else:
         del active_hilo[user_id]
         await log_game(user_id, "hilo", game["bet"], -game["bet"])
