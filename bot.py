@@ -563,8 +563,8 @@ async def cb_hilo_cash(callback: CallbackQuery):
 
 game = active_hilo.get(user_id)
 if not game:
-    await callback.answer("Игра не найдена.")
-    return
+        await callback.answer("Игра не найдена.")
+        return
 
 win = int(game["bet"] * game["multiplier"])
 
