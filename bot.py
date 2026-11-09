@@ -580,7 +580,7 @@ async def cb_hilo_cash(callback: CallbackQuery):
         f"Выигрыш: <b>{fmt_num(win)}</b> монет (x{game['multiplier']:.2f})"
     )
     await callback.answer("💰 Забрано!")
-        @router.message(F.text.lower().startswith("дать"))
+@router.message(F.text.lower().startswith("дать"))
 
     async def cmd_transfer(message: Message):
     if await check_ban_msg(message):
