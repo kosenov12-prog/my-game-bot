@@ -561,28 +561,29 @@ async def cb_hilo_cash(callback: CallbackQuery):
         await callback.answer("Это не твоя игра.", show_alert=True)
         return
 
-    game = active_hilo.get(user_id)
-    if not game:
-        await callback.answer("Игра не найдена.", show_alert=True)
-        return
+     game = active_hilo.get(user_id)
+if not game:
+    await callback.answer("Игра не найдена.")
+    return
 
-    win = int(game["bet"] * game["multiplier"])
-    
-    if win > game["bet"]:
-        await update_balance(user_id, win)
-        await add_daily_win(user_id, win - game["bet"])
-        await log_game(user_id, "hilo", game["bet"], win - game["bet"])
-    
-    del active_hilo[user_id]
-    
-    await callback.message.edit_text(
-        f"💰 <b>Выигрыш забран!</b>\n"
-        f"Выигрыш: <b>{fmt_num(win)}</b> монет (x{game['multiplier']:.2f})"
-    )
-    await callback.answer("💰 Забрано!")
+win = int(game["bet"] * game["multiplier"])
+
+if win > game["bet"]:
+    await update_balance(user_id, win)
+    await add_daily_win(user_id, win - game["bet"])
+    await log_game(user_id, "hilo", game["bet"], win)
+
+del active_hilo[user_id]
+
+await callback.message.edit_text(
+    f"💰 <b>Выигрыш забран!</b>\n"
+    f"Выигрыш: <b>{fmt_num(win)}</b> монет"
+)
+await callback.answer("💰 Забрано!")
+
 @router.message(F.text.lower().startswith("дать"))
 
-    async def cmd_transfer(message: Message):
+async def cmd_transfer(message: Message):
     if await check_ban_msg(message):
         return
 
