@@ -66,17 +66,23 @@ async def set_banned(user_id: int, banned: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE users SET banned = ? WHERE user_id = ?", (banned, user_id))
         await db.commit()
-
+        
+        
 async def add_daily_win(user_id: int, amount: int):
     today = datetime.now().strftime("%Y-%m-%d")
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT daily_date FROM users WHERE user_id = ?", (user_id,)) as cur:
+        async with db.execute("SELECT daily_date, daily_won FROM users WHERE user_id = ?", (user_id,)) as cur:
             row = await cur.fetchone()
+        
         if row[0] != today:
-            await db.execute("UPDATE users SET daily_won = ?, daily_date = ? WHERE user_id = ?", (amount, today, user_id))
+            new_win = max(0, amount)
+            await db.execute("UPDATE users SET daily_won = ?, daily_date = ? WHERE user_id = ?", (new_win, today, user_id))
         else:
-            await db.execute("UPDATE users SET daily_won = daily_won + ? WHERE user_id = ?", (amount, user_id))
+            new_win = row[1] + amount
+            if new_win < 0: new_win = 0
+            await db.execute("UPDATE users SET daily_won = ? WHERE user_id = ?", (new_win, user_id))
         await db.commit()
+
 
 async def log_game(user_id: int, game: str, bet: int, win: int):
     async with aiosqlite.connect(DB_PATH) as db:
