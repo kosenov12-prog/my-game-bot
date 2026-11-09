@@ -436,30 +436,33 @@ def hilo_keyboard(user_id: int, current_card_rank, current_mult=1.0):
         
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-@router.message(F.text.lower().regexp(r'^(хило|хл|hilo)\s*\d*$'))
+@router.message(F.text.lower().regexp(r'^(хило|хл|hilo)'))
 async def cmd_hilo(message: Message):
     if await check_ban_msg(message):
         return
     
-    parts = message.text.lower().replace("хило", "").replace("хл", "").replace("hilo", "").strip().split()
+    # Разбиваем текст на части, отбрасывая первое слово
+    parts = message.text.lower().split()[1:]
     
+    # Если цифр нет, показываем текущую игру
     if len(parts) == 0:
         if message.from_user.id in active_hilo:
             game = active_hilo[message.from_user.id]
             card_str = get_card_str(game["current_rank"], game["current_suit"])
             mult = game["multiplier"]
             win = int(game["bet"] * mult)
-            await message.answer(
+            text = (
                 f"🃏 <b>Твоя игра Hi-Lo:</b>\n"
                 f"Текущая карта: <b>{card_str}</b>\n"
                 f"Ставка: {fmt_num(game['bet'])} | Множитель: <b>{mult:.2f}x</b>\n"
-                f"Потенциальный выигрыш: <b>{fmt_num(win)}</b>",
-                reply_markup=hilo_keyboard(message.from_user.id, game["current_rank"], game["multiplier"])
+                f"Потенциальный выигрыш: <b>{fmt_num(win)}</b>"
             )
+            await message.answer(text, reply_markup=hilo_keyboard(message.from_user.id, game["current_rank"], game["multiplier"]))
         else:
             await message.answer("❌ У тебя нет активной игры. Напиши: <code>хило 100</code>")
         return
 
+    # Если есть цифра (ставка), создаем новую игру
     try:
         bet = int(parts[0])
     except ValueError:
@@ -483,6 +486,15 @@ async def cmd_hilo(message: Message):
         "current_suit": suit,
         "multiplier": 1.0,
     }
+
+    card_str = get_card_str(rank, suit)
+    text = (
+        f"🃏 <b>Игра Hi-Lo началась!</b>\n"
+        f"Текущая карта: <b>{card_str}</b>\n"
+        f"Ставка: {fmt_num(bet)}\n\n"
+        f"Угадай, будет ли следующая карта <b>Выше</b> или <b>Ниже</b>:"
+    )
+    await message.answer(text, reply_markup=hilo_keyboard(message.from_user.id, rank, 1.0))
     
     # ==================== ВЫДАЧА МОНЕТ (ДАТЬ) ====================
 
