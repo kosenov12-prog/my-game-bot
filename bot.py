@@ -553,7 +553,35 @@ async def cb_hilo_guess(callback: CallbackQuery):
     await callback.answer()
     # ==================== ВЫДАЧА МОНЕТ (ДАТЬ) ====================
 
-@router.message(F.text.lower().startswith("дать"))
+@router.callback_query(F.data.startswith("hilocash:"))
+async def cb_hilo_cash(callback: CallbackQuery):
+    user_id = int(callback.data.split(":")[1])
+    
+    if user_id != callback.from_user.id:
+        await callback.answer("Это не твоя игра.", show_alert=True)
+        return
+
+    game = active_hilo.get(user_id)
+    if not game:
+        await callback.answer("Игра не найдена.", show_alert=True)
+        return
+
+    win = int(game["bet"] * game["multiplier"])
+    
+    if win > game["bet"]:
+        await update_balance(user_id, win)
+        await add_daily_win(user_id, win - game["bet"])
+        await log_game(user_id, "hilo", game["bet"], win - game["bet"])
+    
+    del active_hilo[user_id]
+    
+    await callback.message.edit_text(
+        f"💰 <b>Выигрыш забран!</b>\n"
+        f"Выигрыш: <b>{fmt_num(win)}</b> монет (x{game['multiplier']:.2f})"
+    )
+    await callback.answer("💰 Забрано!")
+        @router.message(F.text.lower().startswith("дать"))
+
 async def cmd_transfer(message: Message):
     if await check_ban_msg(message):
         return
