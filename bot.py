@@ -417,23 +417,23 @@ def calc_hilo_mult(current_rank, guess):
     mult = (1.0 / prob) * 0.95
     return round(mult, 2)
 
-def hilo_keyboard(user_id: int, current_card_rank):
+def hilo_keyboard(user_id: int, current_card_rank, current_mult=1.0):
     high_mult = calc_hilo_mult(current_card_rank, "high")
     low_mult = calc_hilo_mult(current_card_rank, "low")
     
-    row1 = []
+    row = []
     if high_mult > 1.01:
-        row1.append(InlineKeyboardButton(text=f"⬆️ Выше ({high_mult}x)", callback_data=f"hilo:{user_id}:high"))
-    
-    row2 = []
+        row.append(InlineKeyboardButton(text=f"⬆️ Выше ({high_mult}x)", callback_data=f"hilo:{user_id}:high"))
     if low_mult > 1.01:
-        row2.append(InlineKeyboardButton(text=f"⬇️ Ниже ({low_mult}x)", callback_data=f"hilo:{user_id}:low"))
+        row.append(InlineKeyboardButton(text=f"⬇️ Ниже ({low_mult}x)", callback_data=f"hilo:{user_id}:low"))
     
     kb = []
-    if row1: kb.append(row1)
-    if row2: kb.append(row2)
+    if row: kb.append(row)
     
-    kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback_data=f"hilocash:{user_id}")])
+    # Кнопка Забрать появляется только после первого хода
+    if current_mult > 1.0:
+        kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback_data=f"hilocash:{user_id}")])
+        
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 @router.message(F.text.lower().startswith(("хило", "хл", "hilo")))
