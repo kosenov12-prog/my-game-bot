@@ -67,7 +67,6 @@ async def set_banned(user_id: int, banned: int):
         await db.execute("UPDATE users SET banned = ? WHERE user_id = ?", (banned, user_id))
         await db.commit()
         
-        
 async def add_daily_win(user_id: int, amount: int):
     today = datetime.now().strftime("%Y-%m-%d")
     async with aiosqlite.connect(DB_PATH) as db:
@@ -82,7 +81,6 @@ async def add_daily_win(user_id: int, amount: int):
             if new_win < 0: new_win = 0
             await db.execute("UPDATE users SET daily_won = ? WHERE user_id = ?", (new_win, user_id))
         await db.commit()
-
 
 async def log_game(user_id: int, game: str, bet: int, win: int):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -136,6 +134,7 @@ async def cmd_balance(message: Message):
         f"💰 <b>Ваш баланс:</b> {fmt_num(user[1])} монет\n"
         f"📊 <b>Заработано сегодня:</b> {fmt_num(user[4])} монет"
     )
+
 @router.message(F.text.lower() == "лб")
 async def cmd_leaderboard(message: Message):
     today = datetime.now().strftime("%Y-%m-%d")
@@ -430,7 +429,6 @@ def hilo_keyboard(user_id: int, current_card_rank, current_mult=1.0):
     kb = []
     if row: kb.append(row)
     
-    # Кнопка Забрать появляется только после первого хода
     if current_mult > 1.0:
         kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback_data=f"hilocash:{user_id}")])
         
@@ -441,10 +439,8 @@ async def cmd_hilo(message: Message):
     if await check_ban_msg(message):
         return
     
-    # Разбиваем текст на части, отбрасывая первое слово
     parts = message.text.lower().split()[1:]
     
-    # Если цифр нет, показываем текущую игру
     if len(parts) == 0:
         if message.from_user.id in active_hilo:
             game = active_hilo[message.from_user.id]
@@ -462,7 +458,6 @@ async def cmd_hilo(message: Message):
             await message.answer("❌ У тебя нет активной игры. Напиши: <code>хило 100</code>")
         return
 
-    # Если есть цифра (ставка), создаем новую игру
     try:
         bet = int(parts[0])
     except ValueError:
@@ -551,7 +546,6 @@ async def cb_hilo_guess(callback: CallbackQuery):
         )
         await callback.message.edit_text(text)
     await callback.answer()
-    # ==================== ВЫДАЧА МОНЕТ (ДАТЬ) ====================
 
 @router.callback_query(F.data.startswith("hilocash:"))
 async def cb_hilo_cash(callback: CallbackQuery):
@@ -561,28 +555,28 @@ async def cb_hilo_cash(callback: CallbackQuery):
         await callback.answer("Это не твоя игра.", show_alert=True)
         return
 
-game = active_hilo.get(user_id)
-if not game:
+    game = active_hilo.get(user_id)
+    if not game:
         await callback.answer("Игра не найдена.")
         return
 
-win = int(game["bet"] * game["multiplier"])
+    win = int(game["bet"] * game["multiplier"])
 
-if win > game["bet"]:
-    await update_balance(user_id, win)
-    await add_daily_win(user_id, win - game["bet"])
-    await log_game(user_id, "hilo", game["bet"], win)
+    if win > game["bet"]:
+        await update_balance(user_id, win)
+        await add_daily_win(user_id, win - game["bet"])
+        await log_game(user_id, "hilo", game["bet"], win)
 
-del active_hilo[user_id]
+    del active_hilo[user_id]
 
-await callback.message.edit_text(
-    f"💰 <b>Выигрыш забран!</b>\n"
-    f"Выигрыш: <b>{fmt_num(win)}</b> монет"
-)
-await callback.answer("💰 Забрано!")
+    await callback.message.edit_text(
+        f"💰 <b>Выигрыш забран!</b>\n"
+        f"Выигрыш: <b>{fmt_num(win)}</b> монет"
+    )
+    await callback.answer("💰 Забрано!")
+    # ==================== ВЫДАЧА МОНЕТ (ДАТЬ) ====================
 
 @router.message(F.text.lower().startswith("дать"))
-
 async def cmd_transfer(message: Message):
     if await check_ban_msg(message):
         return
@@ -738,6 +732,7 @@ async def cmd_give(message: Message):
     await update_balance(target, amount)
     await message.answer(f"✅ Начислено {fmt_num(amount)} монет игроку {target}.")
     
+@router.callback_query(F.data == "admin_ban_reply")
 async def cb_admin_ban_reply(callback: CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Нет доступа.", show_alert=True)
