@@ -4,7 +4,7 @@ import random
 import json
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -766,6 +766,16 @@ async def cmd_unban(message: Message):
 async def main():
     await init_db()
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+    
+    await bot.set_my_commands([
+        BotCommand(command="start", description="Запустить бота"),
+        BotCommand(command="admin", description="Админ-панель"),
+        BotCommand(command="balance", description="Мой баланс"),
+        BotCommand(command="bonus", description="Получить бонус"),
+        BotCommand(command="mines", description="Игра Мины"),
+        BotCommand(command="hilo", description="Игра Hi-Lo"),
+    ])
+    
     dp = Dispatcher()
     dp.include_router(router)
     print("Бот запущен...")
