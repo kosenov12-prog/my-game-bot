@@ -9,26 +9,23 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.client.default import DefaultBotProperties
-import asyncpg
+import asyncpg # Используем asyncpg для PostgreSQL
 
 # --- Конфигурация ---
 BOT_TOKEN = "9223869999:AAGCCEcj4H7-OWqTFbAffl_PBdHX_fXfLP0" # !!! ЗАМЕНИТЕ НА ВАШ ТОКЕН !!!
 ADMIN_ID = 5118497284 # !!! ЗАМЕНИТЕ НА ВАШ ID АДМИНИСТРАТОРА !!!
 
 # !!! ВАЖНО: Установите DATABASE_URL в переменных окружения перед запуском !!!
-# Пример: export DATABASE_URL="postgresql://user:password@host:port/database"
 DATABASE_URL = os.environ.get("DATABASE_URL") 
 
 # --- Проверка конфигурации при старте ---
 if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN":
     print("!!! КРИТИЧЕСКАЯ ОШИБКА: BOT_TOKEN не установлен или является пустышкой. !!!")
-    print("!!! Пожалуйста, замените 'YOUR_BOT_TOKEN' на ваш реальный токен бота. !!!")
-    exit() # Прерываем выполнение, если токен не задан
+    exit() 
 
 if not DATABASE_URL:
     print("!!! КРИТИЧЕСКАЯ ОШИБКА: Переменная окружения DATABASE_URL не установлена. !!!")
-    print("!!! Пожалуйста, установите ее, например: export DATABASE_URL=\"postgresql://user:password@host:port/database\" !!!")
-    exit() # Прерываем выполнение, если URL БД не задан
+    exit()
 
 # --- Инициализация Aiogram ---
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
@@ -40,7 +37,7 @@ db_pool = None # Глобальный пул соединений с БД
 async def init_db():
     """Инициализирует пул соединений с БД и создает таблицы, если их нет."""
     global db_pool
-    print(f"[DB] Попытка подключения к базе данных по URL: {DATABASE_URL.split('@')[-1]}...") # Скрываем логин/пароль
+    print(f"[DB] Попытка подключения к базе данных...")
     try:
         db_pool = await asyncpg.create_pool(DATABASE_URL)
         async with db_pool.acquire() as db:
@@ -69,9 +66,7 @@ async def init_db():
         print("[DB] База данных инициализирована успешно.")
     except Exception as e:
         print(f"[DB] !!! КРИТИЧЕСКАЯ ОШИБКА инициализации базы данных: {e} !!!")
-        db_pool = None # Сбрасываем пул, если инициализация не удалась
-        # В реальном приложении здесь лучше выбросить исключение или завершить работу
-        # exit() 
+        db_pool = None 
 
 async def get_user(user_id: int):
     """Получает данные пользователя из БД. Если пользователя нет, создает его."""
@@ -81,7 +76,6 @@ async def get_user(user_id: int):
     async with db_pool.acquire() as db:
         row = await db.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
         if not row:
-            # Если пользователя нет, создаем его
             today = datetime.now().strftime("%Y-%m-%d")
             try:
                 print(f"[DB] Пользователь {user_id} не найден, создаем...")
@@ -102,7 +96,6 @@ async def update_balance(user_id: int, amount: int):
     try:
         async with db_pool.acquire() as db:
             await db.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", amount, user_id)
-            # print(f"[DB] Баланс пользователя {user_id} обновлен на {amount}.") # Для отладки
     except Exception as e:
         print(f"[DB] !!! ОШИБКА обновления баланса для {user_id}: {e} !!!")
 
@@ -112,7 +105,6 @@ async def set_banned(user_id: int, banned: int):
     try:
         async with db_pool.acquire() as db:
             await db.execute("UPDATE users SET banned = $1 WHERE user_id = $2", banned, user_id)
-            # print(f"[DB] Статус бана для пользователя {user_id} установлен на {banned}.") # Для отладки
     except Exception as e:
         print(f"[DB] !!! ОШИБКА установки бана для {user_id}: {e} !!!")
         
@@ -123,16 +115,16 @@ async def add_daily_win(user_id: int, amount: int):
     try:
         async with db_pool.acquire() as db:
             row = await db.fetchrow("SELECT daily_date, daily_won FROM users WHERE user_id = $1", user_id)
-            if row is None: # Пользователь не найден (маловероятно, но на всякий случай)
+            if row is None: 
                 print(f"[DB] !!! ОШИБКА: Пользователь {user_id} не найден при добавлении daily_win. !!!")
                 return 
             
             if row['daily_date'] != today:
-                new_win = max(0, amount) # Начинаем с нуля, если новый день
+                new_win = max(0, amount) 
                 await db.execute("UPDATE users SET daily_won = $1, daily_date = $2 WHERE user_id = $3", new_win, today, user_id)
             else:
                 new_win = row['daily_won'] + amount
-                if new_win < 0: new_win = 0 # Не допускаем отрицательного значения
+                if new_win < 0: new_win = 0 
                 await db.execute("UPDATE users SET daily_won = $1 WHERE user_id = $2", new_win, user_id)
     except Exception as e:
         print(f"[DB] !!! ОШИБКА добавления ежедневного выигрыша для {user_id}: {e} !!!")
@@ -146,7 +138,6 @@ async def log_game(user_id: int, game: str, bet: int, profit: int):
                 "INSERT INTO games (user_id, game, bet, win, date) VALUES ($1, $2, $3, $4, $5)",
                 user_id, game, bet, profit, datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             )
-            # print(f"[DB] Игра '{game}' для пользователя {user_id} залогирована (ставка: {bet}, профит: {profit}).") # Для отладки
     except Exception as e:
         print(f"[DB] !!! ОШИБКА логирования игры '{game}' для {user_id}: {e} !!!")
 
@@ -164,7 +155,7 @@ async def check_ban_msg(message: Message) -> bool:
     if user is None:
         print(f"[BOT] !!! ОШИБКА: Не удалось получить данные пользователя {message.from_user.id} для проверки бана. !!!")
         await message.answer("❌ Произошла ошибка при проверке статуса. Попробуйте позже.")
-        return True # Считаем забаненным, чтобы предотвратить доступ
+        return True 
     if user['banned'] == 1:
         await message.answer("🚫 Вы заблокированы и не можете играть.")
         return True
@@ -172,19 +163,14 @@ async def check_ban_msg(message: Message) -> bool:
 
 # --- Состояния FSM для админ-панели ---
 class AdminStates(StatesGroup):
-    # Состояния для команды "дать"
-    waiting_target_user_id_for_give = State() # Ожидание ID пользователя для начисления
-    waiting_amount_for_give = State()       # Ожидание суммы для начисления
-    
-    # Состояния для бана/разбана
-    waiting_user_id_for_ban = State()       # Ожидание ID для бана
-    waiting_user_id_for_unban = State()     # Ожидание ID для разбана
+    waiting_give_amount = State() 
+    waiting_user_id_for_action = State() 
 
 # --- Обработчики команд ---
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     print(f"[BOT] Получена команда /start от {message.from_user.id}")
-    await get_user(message.from_user.id) # Убедимся, что пользователь есть в БД
+    await get_user(message.from_user.id) 
     text = (
         "🎮 <b>Добро пожаловать в игровой бот!</b>\n\n"
         "📌 Команды:\n"
@@ -193,7 +179,6 @@ async def cmd_start(message: Message):
         "• <b>бонус</b> — получить бонус (раз в 10 часов)\n"
         "• <b>мины [ставка] [мин]</b> — минное поле (2-24 мины)\n"
         "• <b>хило [ставка]</b> — игра Hi-Lo\n"
-        "• <b>дать [сумма]</b> — ответом на сообщение игрока\n"
     )
     if message.from_user.id == ADMIN_ID:
         text += "\n👑 <b>Админ:</b> /admin — админ-панель"
@@ -246,7 +231,7 @@ async def cmd_leaderboard(message: Message):
             if chat.username:
                 name += f" (@{chat.username})"
         except Exception:
-            name = f"Игрок {uid}" # Если не удалось получить информацию о пользователе
+            name = f"Игрок {uid}" 
             
         text += f"{medal} {name} — {fmt_num(won)} монет\n"
         
@@ -276,9 +261,8 @@ async def cmd_bonus(message: Message):
                 minutes = (left.seconds % 3600) // 60
                 await message.answer(f"⏳ Следующий бонус через <b>{hours}ч {minutes}мин</b>")
                 return
-        except ValueError: # Если формат даты некорректный
+        except ValueError: 
             print(f"[BOT] !!! ОШИБКА: Некорректный формат last_bonus для пользователя {message.from_user.id}: {user['last_bonus']} !!!")
-            # Продолжаем, как будто бонуса не было
             pass
 
     amount = random.randint(5000, 100000)
@@ -304,18 +288,21 @@ def mines_keyboard(user_id: int, opened: set, all_opened_reveal=None):
         for col in range(5):
             idx = row * 5 + col
             if idx in opened:
+                # Если клетка уже открыта
                 if all_opened_reveal and all_opened_reveal.get(idx) == "mine":
                     line.append(InlineKeyboardButton(text="💥", callback_data="none")) # Мина
                 else:
                     line.append(InlineKeyboardButton(text="💎", callback_data="none")) # Безопасно
             else:
+                # Если клетка закрыта
                 if all_opened_reveal and all_opened_reveal.get(idx) == "mine":
                     line.append(InlineKeyboardButton(text="💥", callback_data="none")) # Мина (если игра окончена)
                 else:
                     line.append(InlineKeyboardButton(text="🔒", callback_data=f"mine:{user_id}:{idx}")) # Закрытая клетка
         kb.append(line)
     
-    if all_opened_reveal is None: # Если игра не окончена, добавляем кнопку "Забрать выигрыш"
+    # Добавляем кнопку "Забрать выигрыш", только если игра еще не окончена
+    if all_opened_reveal is None:
         kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback_data=f"minecash:{user_id}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
@@ -324,9 +311,7 @@ def calc_multiplier(opened_count, mines_count):
     if opened_count == 0: return 1.0
     prob_survival = 1.0
     for i in range(opened_count):
-        # Вероятность НЕ попасть в мину на i-ом шаге
         prob_survival *= (25 - mines_count - i) / (25 - i)
-    # Множитель = 0.97 / вероятность выживания (0.97 - коэффициент казино)
     return round(0.97 / prob_survival, 2) if prob_survival > 0 else 999.99 # Бесконечный множитель, если выживание 0%
 
 @router.message(F.text.lower().regexp(r'^(мины|mines)\s+(\d+)\s+(\d+)$'))
@@ -471,6 +456,7 @@ async def cb_mine_cash(callback: CallbackQuery):
 
     del active_mines[user_id]
 
+    # Показываем финальный результат с расположением мин
     reveal = {i: ("mine" if i in game["mines"] else "safe") for i in range(25)}
     for i in game["opened"]: reveal[i] = "safe"
     
@@ -478,7 +464,7 @@ async def cb_mine_cash(callback: CallbackQuery):
         f"💰 <b>Выигрыш забран!</b>\n"
         f"Выигрыш: <b>{fmt_num(win)}</b> монет (x{mult:.2f})\n\n"
         f"<i>Вот где были мины:</i>",
-        reply_markup=mines_keyboard(user_id, game["opened"], reveal)
+        reply_markup=mines_keyboard(user_id, game["opened"], reveal) # Показываем все мины
     )
     await callback.answer("💰 Забрано!")
 
@@ -504,13 +490,14 @@ def get_card_str(rank, suit):
 
 def calc_hilo_mult(current_rank, guess):
     """Рассчитывает множитель для следующего хода в Hi-Lo."""
-    if current_rank < 2 or current_rank > 14: return 1.0 # Некорректный ранг
+    if current_rank < 2 or current_rank > 14: return 1.0 
     
     if guess == "high":
         if current_rank == 14: return 1.0 # Туз - выше ничего нет
         # Карты выше: (14 - current_rank) * 4
         # Всего карт в колоде 52. Убираем 4 карты текущего ранга. Остается 48.
-        prob = ((14 - current_rank) * 4) / 48.0
+        # Вероятность выигрыша = (кол-во карт выше) / (общее кол-во оставшихся карт)
+        prob = ((14 - current_rank) * 4) / 48.0 
     elif guess == "low":
         if current_rank == 2: return 1.0 # Двойка - ниже ничего нет
         # Карты ниже: (current_rank - 2) * 4
@@ -519,7 +506,8 @@ def calc_hilo_mult(current_rank, guess):
         return 1.0 # Некорректный ход
 
     if prob <= 0: return 1.0 # На всякий случай
-    return round((1.0 / prob) * 0.95, 2) # 0.95 - комиссия казино
+    # Множитель = 1 / вероятность (с учетом комиссии казино 0.95)
+    return round((1.0 / prob) * 0.95, 2)
 
 def hilo_keyboard(user_id: int, current_card_rank, current_mult=1.0):
     """Создает клавиатуру для игры Hi-Lo."""
@@ -538,4 +526,134 @@ def hilo_keyboard(user_id: int, current_card_rank, current_mult=1.0):
     
     # Кнопка "Забрать выигрыш", если текущий множитель > 1
     if current_mult > 1.0:
-        kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback
+        kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback_data=f"hilocash:{user_id}")])
+        
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+@router.message(F.text.lower().regexp(r'^(хило|хл|hilo)\s+(\d+)$'))
+async def cmd_hilo(message: Message):
+    print(f"[BOT] Получена команда 'хило' от {message.from_user.id}")
+    if await check_ban_msg(message):
+        return
+    
+    match = F.text.lower().regexp(r'^(хило|хл|hilo)\s+(\d+)$').match(message.text)
+    bet_str = match.group(2)
+    
+    try:
+        bet = int(bet_str)
+    except ValueError:
+        await message.answer("❌ Ставка должна быть числом. Пример: <code>хило 100</code>")
+        return
+
+    user = await get_user(message.from_user.id)
+    if user is None:
+        await message.answer("❌ Произошла ошибка при получении данных. Попробуйте позже.")
+        return
+    if bet <= 0:
+        await message.answer("❌ Ставка должна быть больше 0.")
+        return
+    if bet > user['balance']:
+        await message.answer("❌ Недостаточно средств.")
+        return
+
+    # Списываем ставку
+    await update_balance(message.from_user.id, -bet)
+
+    # Генерируем первую карту
+    rank, suit = draw_card()
+    
+    # Сохраняем состояние игры
+    active_hilo[message.from_user.id] = {
+        "bet": bet,
+        "current_rank": rank,
+        "current_suit": suit,
+        "multiplier": 1.0, # Начинаем с множителем 1.0
+    }
+
+    card_str = get_card_str(rank, suit)
+    text = (
+        f"🃏 <b>Игра Hi-Lo началась!</b>\n"
+        f"Текущая карта: <b>{card_str}</b>\n"
+        f"Ставка: {fmt_num(bet)}\n\n"
+        f"Угадай, будет ли следующая карта <b>Выше/Равно</b> или <b>Ниже/Равно</b>:"
+    )
+    await message.answer(text, reply_markup=hilo_keyboard(message.from_user.id, rank, 1.0))
+
+@router.callback_query(F.data.startswith("hilo:"))
+async def cb_hilo_guess(callback: CallbackQuery):
+    try:
+        _, user_id_str, guess = callback.data.split(":")
+        user_id = int(user_id_str)
+    except (ValueError, IndexError):
+        await callback.answer("❌ Ошибка в данных команды.", show_alert=True)
+        return
+        
+    if user_id != callback.from_user.id:
+        await callback.answer("Это не твоя игра.", show_alert=True)
+        return
+
+    game = active_hilo.get(user_id)
+    if not game:
+        await callback.answer("Игра не найдена.", show_alert=True)
+        await callback.message.edit_reply_markup(reply_markup=None)
+        return
+
+    current_rank = game["current_rank"]
+    current_card = get_card_str(current_rank, game["current_suit"])
+    
+    # Рассчитываем множитель для текущего шага
+    step_mult = calc_hilo_mult(current_rank, guess)
+    
+    # Генерируем новую карту
+    new_rank, new_suit = draw_card()
+    new_card = get_card_str(new_rank, new_suit)
+    
+    win = False
+    # Проверяем, угадал ли игрок
+    if guess == "high" and new_rank >= current_rank:
+        win = True
+    elif guess == "low" and new_rank <= current_rank:
+        win = True
+    
+    if win:
+        # Увеличиваем общий множитель игры
+        game["multiplier"] = round(game["multiplier"] * step_mult, 2)
+        
+        # Обновляем текущую карту для следующего хода
+        game["current_rank"] = new_rank
+        game["current_suit"] = new_suit
+        
+        mult = game["multiplier"]
+        win_amount = int(game["bet"] * mult)
+        
+        msg_prefix = "🎉 <b>Угадал!</b>\n\n"
+        # Особый случай: выпал тот же ранг
+        if new_rank == current_rank:
+            msg_prefix = "😮 <b>Выпал тот же ранг! Продолжаем.</b>\n\n"
+            
+        text = (
+            f"{msg_prefix}"
+            f"Было: {current_card} ➡️ Стало: {new_card}\n"
+            f"Текущий множитель: <b>{mult:.2f}x</b>\n"
+            f"Потенциальный выигрыш: <b>{fmt_num(win_amount)}</b> монет\n\n"
+            f"Продолжаем или забираем?"
+        )
+        await callback.message.edit_text(text, reply_markup=hilo_keyboard(user_id, new_rank, game["multiplier"]))
+    else:
+        # Проигрыш
+        profit = -game["bet"] # Чистый проигрыш равен ставке
+        await log_game(user_id, "hilo", game["bet"], profit)
+        del active_hilo[user_id] # Удаляем игру из активных
+        
+        text = (
+            f"💥 <b>Не угадал!</b>\n\n"
+            f"Было: {current_card} ➡️ Стало: {new_card}\n"
+            f"К сожалению, ставка {fmt_num(game['bet'])} монет сгорела."
+        )
+        await callback.message.edit_text(text)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("hilocash:"))
+async def cb_hilo_cash(callback: CallbackQuery):
+    try:
+        user_id_str =
