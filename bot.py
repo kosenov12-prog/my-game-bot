@@ -23,31 +23,38 @@ async def init_db():
     global db_pool
     if not DATABASE_URL:
         print("ОШИБКА: DATABASE_URL не найден!")
+        # В реальном приложении здесь лучше выбросить исключение или завершить работу
         return
-    db_pool = await asyncpg.create_pool(DATABASE_URL)
-    async with db_pool.acquire() as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                balance INTEGER DEFAULT 1000,
-                banned INTEGER DEFAULT 0,
-                last_bonus TEXT,
-                daily_won INTEGER DEFAULT 0,
-                daily_date TEXT
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS games (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT,
-                game TEXT,
-                bet INTEGER,
-                win INTEGER,
-                date TEXT
-            )
-        """)
+    try:
+        db_pool = await asyncpg.create_pool(DATABASE_URL)
+        async with db_pool.acquire() as db:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    balance INTEGER DEFAULT 1000,
+                    banned INTEGER DEFAULT 0,
+                    last_bonus TEXT,
+                    daily_won INTEGER DEFAULT 0,
+                    daily_date TEXT
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS games (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    game TEXT,
+                    bet INTEGER,
+                    win INTEGER,
+                    date TEXT
+                )
+            """)
+        print("База данных инициализирована успешно.")
+    except Exception as e:
+        print(f"Ошибка инициализации базы данных: {e}")
+        # В реальном приложении здесь лучше выбросить исключение или завершить работу
 
 async def get_user(user_id: int):
+    if not db_pool: return None # Проверка на случай, если init_db не удалась
     async with db_pool.acquire() as db:
         row = await db.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
         if not row:
@@ -60,14 +67,17 @@ async def get_user(user_id: int):
     return row
 
 async def update_balance(user_id: int, amount: int):
+    if not db_pool: return
     async with db_pool.acquire() as db:
         await db.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", amount, user_id)
 
 async def set_banned(user_id: int, banned: int):
+    if not db_pool: return
     async with db_pool.acquire() as db:
         await db.execute("UPDATE users SET banned = $1 WHERE user_id = $2", banned, user_id)
         
 async def add_daily_win(user_id: int, amount: int):
+    if not db_pool: return
     today = datetime.now().strftime("%Y-%m-%d")
     async with db_pool.acquire() as db:
         row = await db.fetchrow("SELECT daily_date, daily_won FROM users WHERE user_id = $1", user_id)
@@ -79,7 +89,9 @@ async def add_daily_win(user_id: int, amount: int):
             if new_win < 0: new_win = 0
             await db.execute("UPDATE users SET daily_won = $1 WHERE user_id = $2", new_win, user_id)
 
+# УДАЛЕНА ДУБЛИРУЮЩАЯ ФУНКЦИЯ log_game для aiosqlite
 async def log_game(user_id: int, game: str, bet: int, win: int):
+    if not db_pool: return
     async with db_pool.acquire() as db:
         await db.execute(
             "INSERT INTO games (user_id, game, bet, win, date) VALUES ($1, $2, $3, $4, $5)",
@@ -90,20 +102,11 @@ async def is_banned(user_id: int):
     if user_id == ADMIN_ID:
         return False
     user = await get_user(user_id)
+    # Проверка на случай, если get_user вернул None (например, из-за ошибки БД)
+    if user is None:
+        print(f"Ошибка: Не удалось получить данные пользователя {user_id} для проверки бана.")
+        return True # Считаем забаненным, чтобы предотвратить доступ
     return user['banned'] == 1
-async def log_game(user_id: int, game: str, bet: int, win: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO games (user_id, game, bet, win, date) VALUES (?, ?, ?, ?, ?)",
-            (user_id, game, bet, win, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        )
-        await db.commit()
-
-async def is_banned(user_id: int):
-    if user_id == ADMIN_ID:
-        return False
-    user = await get_user(user_id)
-    return user[2] == 1
 
 class AdminStates(StatesGroup):
     waiting_give = State()
@@ -139,20 +142,23 @@ async def cmd_start(message: Message):
 @router.message(F.text.lower() == "б")
 async def cmd_balance(message: Message):
     user = await get_user(message.from_user.id)
+    if user is None:
+        await message.answer("❌ Произошла ошибка при получении данных. Попробуйте позже.")
+        return
     await message.answer(
-        f"💰 <b>Ваш баланс:</b> {fmt_num(user[1])} монет\n"
-        f"📊 <b>Заработано сегодня:</b> {fmt_num(user[4])} монет"
+        f"💰 <b>Ваш баланс:</b> {fmt_num(user['balance'])} монет\n"
+        f"📊 <b>Заработано сегодня:</b> {fmt_num(user['daily_won'])} монет"
     )
 
 @router.message(F.text.lower() == "лб")
 async def cmd_leaderboard(message: Message):
     today = datetime.now().strftime("%Y-%m-%d")
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT user_id, daily_won FROM users WHERE daily_date = ? AND daily_won > 0 ORDER BY daily_won DESC LIMIT 10",
-            (today,)
-        ) as cur:
-            rows = await cur.fetchall()
+    if not db_pool: return
+    async with db_pool.acquire() as db:
+        rows = await db.fetch(
+            "SELECT user_id, daily_won FROM users WHERE daily_date = $1 AND daily_won > 0 ORDER BY daily_won DESC LIMIT 10",
+            today
+        )
 
     if not rows:
         await message.answer("📊 Сегодня ещё никто не выиграл. Будь первым!")
@@ -161,7 +167,9 @@ async def cmd_leaderboard(message: Message):
     text = "🏆 <b>Лидерборд за сегодня:</b>\n\n"
     medals = ["🥇", "🥈", "🥉"]
     
-    for i, (uid, won) in enumerate(rows):
+    for i, row in enumerate(rows):
+        uid = row['user_id']
+        won = row['daily_won']
         medal = medals[i] if i < 3 else f"{i+1}."
         try:
             chat = await message.bot.get_chat(uid)
@@ -180,10 +188,13 @@ async def cmd_bonus(message: Message):
     if await check_ban_msg(message):
         return
     user = await get_user(message.from_user.id)
+    if user is None:
+        await message.answer("❌ Произошла ошибка при получении данных. Попробуйте позже.")
+        return
     now = datetime.now()
 
-    if user[3]:
-        last = datetime.fromisoformat(user[3])
+    if user['last_bonus']:
+        last = datetime.fromisoformat(user['last_bonus'])
         diff = now - last
         if diff < timedelta(hours=10):
             left = timedelta(hours=10) - diff
@@ -194,10 +205,9 @@ async def cmd_bonus(message: Message):
 
     amount = random.randint(5000, 100000)
     await update_balance(message.from_user.id, amount)
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET last_bonus = ? WHERE user_id = ?",
-                         (now.isoformat(), message.from_user.id))
-        await db.commit()
+    async with db_pool.acquire() as db:
+        await db.execute("UPDATE users SET last_bonus = $1 WHERE user_id = $2",
+                         now.isoformat(), message.from_user.id)
     await message.answer(f"🎁 <b>Бонус получен!</b>\n💵 +{fmt_num(amount)} монет")
     # ==================== ИГРА: МИНЫ ====================
 
@@ -273,10 +283,13 @@ async def cmd_mines(message: Message):
         return
 
     user = await get_user(message.from_user.id)
+    if user is None:
+        await message.answer("❌ Произошла ошибка при получении данных. Попробуйте позже.")
+        return
     if bet <= 0:
         await message.answer("❌ Ставка должна быть больше 0.")
         return
-    if bet > user[1]:
+    if bet > user['balance']:
         await message.answer("❌ Недостаточно средств.")
         return
 
@@ -386,7 +399,9 @@ async def cb_mine_cash(callback: CallbackQuery):
         f"<i>Вот где были мины:</i>",
         reply_markup=mines_keyboard(user_id, game["opened"], reveal)
     )
+    # ДОБАВЛЕНО: callback.answer()
     await callback.answer("💰 Забрано!")
+
 # ==================== ИГРА: HI-LO (ХАЙ-ЛОУ) ====================
 
 active_hilo = {}
@@ -407,15 +422,13 @@ def get_card_str(rank, suit):
 
 def calc_hilo_mult(current_rank, guess):
     if guess == "high":
-        # Если карта 14 (Туз), выше ничего нет, шанс только на "равно"
         higher_ranks = 14 - current_rank
         cards_win = higher_ranks * 4
-        prob = (cards_win + 3) / 51.0  # +3 карты для "равно"
+        prob = (cards_win + 3) / 51.0  
     elif guess == "low":
-        # Если карта 2 (Двойка), ниже ничего нет, шанс только на "равно"
         lower_ranks = current_rank - 2
         cards_win = lower_ranks * 4
-        prob = (cards_win + 3) / 51.0  # +3 карты для "равно"
+        prob = (cards_win + 3) / 51.0  
     else:
         prob = 0
     
@@ -428,15 +441,11 @@ def hilo_keyboard(user_id: int, current_card_rank, current_mult=1.0):
     low_mult = calc_hilo_mult(current_card_rank, "low")
     
     row = []
-    # Кнопка "Выше или =" есть всегда, даже для Короля и Туза
     row.append(InlineKeyboardButton(text=f"⬆️ Выше или = ({high_mult}x)", callback_data=f"hilo:{user_id}:high"))
-    
-    # Кнопка "Ниже или =" есть всегда, даже для Двойки
     row.append(InlineKeyboardButton(text=f"⬇️ Ниже или = ({low_mult}x)", callback_data=f"hilo:{user_id}:low"))
     
     kb = [row]
     
-    # Кнопка забрать, если есть что забирать (множитель > 1)
     if current_mult > 1.0:
         kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback_data=f"hilocash:{user_id}")])
         
@@ -473,10 +482,13 @@ async def cmd_hilo(message: Message):
         return
 
     user = await get_user(message.from_user.id)
+    if user is None:
+        await message.answer("❌ Произошла ошибка при получении данных. Попробуйте позже.")
+        return
     if bet <= 0:
         await message.answer("❌ Ставка должна быть больше 0.")
         return
-    if bet > user[1]:
+    if bet > user['balance']:
         await message.answer("❌ Недостаточно средств.")
         return
 
@@ -521,7 +533,6 @@ async def cb_hilo_guess(callback: CallbackQuery):
     new_rank, new_suit = draw_card()
     new_card = get_card_str(new_rank, new_suit)
     
-    # ЛОГИКА ВЫИГРЫША: Выше или Равно / Ниже или Равно
     win = False
     if guess == "high" and new_rank >= current_rank:
         win = True
@@ -530,7 +541,6 @@ async def cb_hilo_guess(callback: CallbackQuery):
     
     if win:
         if new_rank == current_rank:
-            # Если выпало то же самое, даем бонус x1.5 к текущему шагу
             game["multiplier"] = round(game["multiplier"] * (step_mult * 1.5), 2)
             msg_prefix = "😮 <b>Выпало то же число! Но ты в игре.</b>\n\n"
         else:
@@ -552,8 +562,9 @@ async def cb_hilo_guess(callback: CallbackQuery):
         )
         await callback.message.edit_text(text, reply_markup=hilo_keyboard(user_id, new_rank, game["multiplier"]))
     else:
+        # УДАЛЕНО: game["bet"] - это ставка, а не выигрыш. Выигрыш здесь 0.
+        await log_game(user_id, "hilo", game["bet"], 0) 
         del active_hilo[user_id]
-        await log_game(user_id, "hilo", game["bet"], -game["bet"])
         
         text = (
             f"💥 <b>Не угадал!</b>\n\n"
@@ -578,10 +589,16 @@ async def cb_hilo_cash(callback: CallbackQuery):
 
     win = int(game["bet"] * game["multiplier"])
 
-    if win > game["bet"]:
-        await update_balance(user_id, win)
-        await add_daily_win(user_id, win - game["bet"])
-        await log_game(user_id, "hilo", game["bet"], win)
+    # ИСПРАВЛЕНО: Логируем игру независимо от того, выиграл игрок или нет (если ставка была)
+    # Сравниваем win с game["bet"] для определения чистого выигрыша (или проигрыша)
+    profit = win - game["bet"]
+    await log_game(user_id, "hilo", game["bet"], profit)
+
+    # Обновляем баланс только если есть фактический выигрыш (прибыль > 0)
+    # Или если игрок хочет забрать, даже если он в минусе (хотя это странно, но логика такая)
+    # Лучше обновлять баланс всегда, если игра закончилась
+    await update_balance(user_id, win)
+    await add_daily_win(user_id, profit) # Добавляем чистый выигрыш в статистику дня
 
     del active_hilo[user_id]
 
@@ -635,13 +652,18 @@ async def cmd_transfer(message: Message):
         return
 
     sender = await get_user(message.from_user.id)
-    await get_user(target)
+    if sender is None:
+        await message.answer("❌ Произошла ошибка при получении данных отправителя. Попробуйте позже.")
+        return
+    
+    # Убедимся, что пользователь-получатель существует в БД
+    await get_user(target) 
 
     if message.from_user.id != ADMIN_ID:
         if amount > 50000:
             await message.answer("❌ Максимальная сумма для выдачи игрокам — 50 000 монет.")
             return
-        if sender[1] < amount:
+        if sender['balance'] < amount:
             await message.answer("❌ Недостаточно средств для выдачи.")
             return
 
@@ -662,167 +684,4 @@ def admin_kb():
     ])
 
 @router.message(Command("admin"))
-async def cmd_admin(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("❌ Доступ запрещён.")
-        return
-    await message.answer("👑 <b>Админ-панель</b>\nВыбери действие:", reply_markup=admin_kb())
-
-@router.callback_query(F.data == "admin_give_self")
-async def cb_admin_give_self(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Нет доступа.", show_alert=True)
-        return
-    await state.set_state(AdminStates.waiting_amount)
-    await state.update_data(target_id=ADMIN_ID)
-    await callback.message.edit_text("💰 Введите сумму для начисления себе (5118497284):")
-    await callback.answer()
-
-@router.callback_query(F.data == "admin_give_reply")
-async def cb_admin_give_reply(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Нет доступа.", show_alert=True)
-        return
-    await state.set_state(AdminStates.waiting_give)
-    await callback.message.edit_text(
-        "💰 <b>Начисление (ответом)</b>\n\n"
-        "Ответь командой на сообщение игрока: <code>/give 500</code>\n"
-        "Где 500 — сумма."
-    )
-    await callback.answer()
-
-@router.callback_query(F.data == "admin_give_id")
-async def cb_admin_give_id(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Нет доступа.", show_alert=True)
-        return
-    await state.set_state(AdminStates.waiting_id)
-    await callback.message.edit_text("💰 Введите ID игрока:")
-    await callback.answer()
-
-@router.message(AdminStates.waiting_id)
-async def admin_waiting_id(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    try:
-        target = int(message.text.strip())
-    except ValueError:
-        await message.answer("❌ Некорректный ID.")
-        return
-    await state.update_data(target_id=target)
-    await state.set_state(AdminStates.waiting_amount)
-    await message.answer(f"💰 Введите сумму для начисления игроку <code>{target}</code>:")
-
-@router.message(AdminStates.waiting_amount)
-async def admin_waiting_amount(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    try:
-        amount = int(message.text.strip())
-    except ValueError:
-        await message.answer("❌ Некорректная сумма.")
-        return
-    data = await state.get_data()
-    target = data.get("target_id")
-    await state.clear()
-    await get_user(target)
-    await update_balance(target, amount)
-    await message.answer(f"✅ Начислено {fmt_num(amount)} монет игроку <code>{target}</code>.")
-
-@router.message(Command("give"))
-async def cmd_give(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("❌ Доступ запрещён.")
-        return
-    if not message.reply_to_message:
-        await message.answer("❌ Ответь на сообщение игрока командой /give СУММА")
-        return
-    parts = message.text.split()
-    if len(parts) != 2:
-        await message.answer("❌ Формат: /give СУММА (ответом на сообщение)")
-        return
-    try:
-        amount = int(parts[1])
-    except ValueError:
-        await message.answer("❌ Сумма должна быть числом.")
-        return
-    target = message.reply_to_message.from_user.id
-    await get_user(target)
-    await update_balance(target, amount)
-    await message.answer(f"✅ Начислено {fmt_num(amount)} монет игроку {target}.")
-    
-@router.callback_query(F.data == "admin_ban_reply")
-async def cb_admin_ban_reply(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Нет доступа.", show_alert=True)
-        return
-    await callback.message.edit_text(
-        "🚫 <b>Бан</b>\n\nОтветь на сообщение игрока: <code>/ban</code>\n"
-        "Также: <code>/ban ID</code>"
-    )
-    await callback.answer()
-
-@router.message(Command("ban"))
-async def cmd_ban(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    target = None
-    if message.reply_to_message:
-        target = message.reply_to_message.from_user.id
-    else:
-        parts = message.text.split()
-        if len(parts) == 2:
-            try:
-                target = int(parts[1])
-            except ValueError:
-                pass
-    if not target:
-        await message.answer("❌ Ответь на сообщение игрока или укажи ID: /ban ID")
-        return
-    await get_user(target)
-    await set_banned(target, 1)
-    await message.answer(f"🚫 Игрок <code>{target}</code> забанен.")
-
-@router.message(Command("unban"))
-async def cmd_unban(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    target = None
-    if message.reply_to_message:
-        target = message.reply_to_message.from_user.id
-    else:
-        parts = message.text.split()
-        if len(parts) == 2:
-            try:
-                target = int(parts[1])
-            except ValueError:
-                pass
-    if not target:
-        await message.answer("❌ Ответь на сообщение игрока или укажи ID: /unban ID")
-        return
-    await get_user(target)
-    await set_banned(target, 0)
-    await message.answer(f"✅ Игрок <code>{target}</code> разбанен.")
-
-# ==================== ЗАПУСК ====================
-
-async def main():
-    await init_db()
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-    
-    await bot.set_my_commands([
-        BotCommand(command="start", description="Запустить бота"),
-        BotCommand(command="admin", description="Админ-панель"),
-        BotCommand(command="balance", description="Мой баланс"),
-        BotCommand(command="bonus", description="Получить бонус"),
-        BotCommand(command="mines", description="Игра Мины"),
-        BotCommand(command="hilo", description="Игра Hi-Lo"),
-    ])
-    
-    dp = Dispatcher()
-    dp.include_router(router)
-    print("Бот запущен...")
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+async def cmd_admin(message:
