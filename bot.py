@@ -249,8 +249,8 @@ async def cmd_mines(message: Message):
         f"💣 <b>Минное поле</b>\nСтавка: {fmt_num(bet)} | Мин: {mines_count}\nМножитель: <b>1.00x</b> | Выигрыш: <b>0</b>",
         reply_markup=mines_keyboard(message.from_user.id, set())
     )
-    @router.callback_query(F.data.startswith("mine:"))
-    async def cb_mine_open(callback: CallbackQuery):
+@router.callback_query(F.data.startswith("mine:"))
+async def cb_mine_open(callback: CallbackQuery):
     try:
         _, user_id_str, idx_str = callback.data.split(":")
         user_id = int(user_id_str)
