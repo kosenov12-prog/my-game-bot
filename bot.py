@@ -9,21 +9,26 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.client.default import DefaultBotProperties
-import aiosqlite
+import asyncpg
 
 BOT_TOKEN = "9223869999:AAGCCEcj4H7-OWqTFbAffl_PBdHX_fXfLP0"
 ADMIN_ID = 5118497284
 
-os.makedirs("data", exist_ok=True)
-DB_PATH = "data/game.db"
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 router = Router()
+db_pool = None
 
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
+    global db_pool
+    if not DATABASE_URL:
+        print("ОШИБКА: DATABASE_URL не найден!")
+        return
+    db_pool = await asyncpg.create_pool(DATABASE_URL)
+    async with db_pool.acquire() as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
+                user_id BIGINT PRIMARY KEY,
                 balance INTEGER DEFAULT 1000,
                 banned INTEGER DEFAULT 0,
                 last_bonus TEXT,
@@ -33,55 +38,59 @@ async def init_db():
         """)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS games (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
                 game TEXT,
                 bet INTEGER,
                 win INTEGER,
                 date TEXT
             )
         """)
-        await db.commit()
 
 async def get_user(user_id: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)) as cur:
-            row = await cur.fetchone()
+    async with db_pool.acquire() as db:
+        row = await db.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
         if not row:
+            today = datetime.now().strftime("%Y-%m-%d")
             await db.execute(
-                "INSERT INTO users (user_id, balance, banned, last_bonus, daily_won, daily_date) VALUES (?, 1000, 0, NULL, 0, ?)",
-                (user_id, datetime.now().strftime("%Y-%m-%d"))
+                "INSERT INTO users (user_id, balance, banned, last_bonus, daily_won, daily_date) VALUES ($1, 1000, 0, NULL, 0, $2)",
+                user_id, today
             )
-            await db.commit()
-            async with db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)) as cur:
-                row = await cur.fetchone()
+            row = await db.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
     return row
 
 async def update_balance(user_id: int, amount: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
-        await db.commit()
+    async with db_pool.acquire() as db:
+        await db.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", amount, user_id)
 
 async def set_banned(user_id: int, banned: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET banned = ? WHERE user_id = ?", (banned, user_id))
-        await db.commit()
+    async with db_pool.acquire() as db:
+        await db.execute("UPDATE users SET banned = $1 WHERE user_id = $2", banned, user_id)
         
 async def add_daily_win(user_id: int, amount: int):
     today = datetime.now().strftime("%Y-%m-%d")
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT daily_date, daily_won FROM users WHERE user_id = ?", (user_id,)) as cur:
-            row = await cur.fetchone()
-        
-        if row[0] != today:
+    async with db_pool.acquire() as db:
+        row = await db.fetchrow("SELECT daily_date, daily_won FROM users WHERE user_id = $1", user_id)
+        if row['daily_date'] != today:
             new_win = max(0, amount)
-            await db.execute("UPDATE users SET daily_won = ?, daily_date = ? WHERE user_id = ?", (new_win, today, user_id))
+            await db.execute("UPDATE users SET daily_won = $1, daily_date = $2 WHERE user_id = $3", new_win, today, user_id)
         else:
-            new_win = row[1] + amount
+            new_win = row['daily_won'] + amount
             if new_win < 0: new_win = 0
-            await db.execute("UPDATE users SET daily_won = ? WHERE user_id = ?", (new_win, user_id))
-        await db.commit()
+            await db.execute("UPDATE users SET daily_won = $1 WHERE user_id = $2", new_win, user_id)
 
+async def log_game(user_id: int, game: str, bet: int, win: int):
+    async with db_pool.acquire() as db:
+        await db.execute(
+            "INSERT INTO games (user_id, game, bet, win, date) VALUES ($1, $2, $3, $4, $5)",
+            user_id, game, bet, win, datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        )
+
+async def is_banned(user_id: int):
+    if user_id == ADMIN_ID:
+        return False
+    user = await get_user(user_id)
+    return user['banned'] == 1
 async def log_game(user_id: int, game: str, bet: int, win: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
